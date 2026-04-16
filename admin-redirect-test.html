@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin Redirect Test - MACP Connect DR</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px; 
+      margin: 0 auto; 
+      padding: 40px 20px;
+      background: #f5f5f5;
+    }
+    h1 { color: #232f3e; margin-bottom: 10px; }
+    .subtitle { color: #666; margin-bottom: 30px; }
+    
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .card h2 { margin-top: 0; color: #232f3e; font-size: 18px; }
+    
+    .button-group {
+      display: flex;
+      gap: 12px;
+      margin: 20px 0;
+    }
+    
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-weight: 500;
+    }
+    
+    .btn-east {
+      background: #0073bb;
+      color: white;
+    }
+    .btn-east:hover { background: #005a8c; }
+    
+    .btn-west {
+      background: #d45b07;
+      color: white;
+    }
+    .btn-west:hover { background: #b34a06; }
+    
+    .btn-auto {
+      background: #1d8102;
+      color: white;
+    }
+    .btn-auto:hover { background: #167001; }
+    
+    .btn-secondary {
+      background: #eee;
+      color: #333;
+    }
+    .btn-secondary:hover { background: #ddd; }
+    
+    .status-box {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 16px;
+      margin-top: 16px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 13px;
+    }
+    
+    .log-entry { margin: 4px 0; }
+    .log-entry.info { color: #0073bb; }
+    .log-entry.success { color: #1d8102; }
+    .log-entry.warn { color: #d45b07; }
+    .log-entry.error { color: #c00; }
+    
+    .config-input {
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+    
+    .toggle-group {
+      display: flex;
+      gap: 8px;
+      margin: 16px 0;
+    }
+    .toggle-btn {
+      flex: 1;
+      padding: 10px;
+      border: 2px solid #ddd;
+      background: white;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .toggle-btn.active {
+      border-color: #0073bb;
+      background: #e6f3ff;
+    }
+    
+    .instance-url {
+      color: #666;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    
+    label { font-weight: 500; display: block; margin-bottom: 6px; }
+    
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .checkbox-row input { width: 18px; height: 18px; }
+  </style>
+</head>
+<body>
+  <h1>🔄 Admin Redirect Test</h1>
+  <p class="subtitle">Test the JavaScript redirect functionality for MACP Connect DR</p>
+  
+  <!-- Manual Region Selection -->
+  <div class="card">
+    <h2>1. Manual Region Selection</h2>
+    <p>Click a button to simulate selecting a region and redirecting:</p>
+    
+    <div class="button-group">
+      <button class="btn-east" onclick="simulateRedirect('us-east-1')">
+        🌎 US-East-1 (Primary)
+      </button>
+      <button class="btn-west" onclick="simulateRedirect('us-west-2')">
+        🌏 US-West-2 (DR)
+      </button>
+    </div>
+    
+    <div class="checkbox-row">
+      <input type="checkbox" id="actualRedirect">
+      <label for="actualRedirect" style="display: inline; font-weight: normal;">
+        Actually perform redirect (will navigate away from this page)
+      </label>
+    </div>
+  </div>
+  
+  <!-- Simulated Config API -->
+  <div class="card">
+    <h2>2. Simulate Config API Response</h2>
+    <p>Set the "active region" that would be returned by the config API:</p>
+    
+    <div class="toggle-group">
+      <button class="toggle-btn active" id="toggle-east" onclick="setSimulatedRegion('us-east-1')">
+        <strong>US-East-1</strong>
+        <div class="instance-url">macp-dos-prod-connect-1</div>
+      </button>
+      <button class="toggle-btn" id="toggle-west" onclick="setSimulatedRegion('us-west-2')">
+        <strong>US-West-2</strong>
+        <div class="instance-url">macp-dos-prod-connect-2</div>
+      </button>
+    </div>
+    
+    <div class="button-group">
+      <button class="btn-auto" onclick="simulateAutoRedirect()">
+        🚀 Test Auto-Redirect (uses simulated config)
+      </button>
+      <button class="btn-secondary" onclick="simulateConfigError()">
+        ⚠️ Simulate Config Error
+      </button>
+    </div>
+  </div>
+  
+  <!-- Config Endpoint Test -->
+  <div class="card">
+    <h2>3. Test Real Config Endpoint (Optional)</h2>
+    <p>Enter your actual config API endpoint to test against:</p>
+    
+    <input type="text" 
+           id="configEndpoint" 
+           class="config-input"
+           placeholder="https://config.prod.gsa.dos.macp.cloud/active-region"
+           value="">
+    
+    <div class="button-group">
+      <button class="btn-secondary" onclick="testRealEndpoint()">
+        🔗 Fetch from Real Endpoint
+      </button>
+    </div>
+  </div>
+  
+  <!-- Log Output -->
+  <div class="card">
+    <h2>📋 Activity Log</h2>
+    <div id="logOutput" class="status-box">
+      <div class="log-entry info">Ready for testing...</div>
+    </div>
+    <button class="btn-secondary" onclick="clearLog()" style="margin-top: 12px;">
+      Clear Log
+    </button>
+  </div>
+
+  <script>
+    // Connect instance URLs
+    const CONNECT_INSTANCES = {
+      'us-east-1': 'https://macp-dos-prod-connect-1.my.connect.aws/',
+      'us-west-2': 'https://macp-dos-prod-connect-2.my.connect.aws/'
+    };
+    
+    const DEFAULT_REGION = 'us-east-1';
+    
+    // Simulated active region (for testing without real API)
+    let simulatedActiveRegion = 'us-east-1';
+    
+    // Logging helper
+    function log(message, type = 'info') {
+      const logOutput = document.getElementById('logOutput');
+      const timestamp = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${timestamp}] ${message}`;
+      logOutput.appendChild(entry);
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+    
+    function clearLog() {
+      document.getElementById('logOutput').innerHTML = 
+        '<div class="log-entry info">Log cleared. Ready for testing...</div>';
+    }
+    
+    // Set simulated region
+    function setSimulatedRegion(region) {
+      simulatedActiveRegion = region;
+      
+      // Update toggle buttons
+      document.getElementById('toggle-east').classList.toggle('active', region === 'us-east-1');
+      document.getElementById('toggle-west').classList.toggle('active', region === 'us-west-2');
+      
+      log(`Simulated active region set to: ${region}`, 'info');
+    }
+    
+    // Simulate manual redirect
+    function simulateRedirect(region) {
+      const targetUrl = CONNECT_INSTANCES[region];
+      log(`Manual selection: ${region}`, 'info');
+      log(`Target URL: ${targetUrl}`, 'info');
+      
+      if (document.getElementById('actualRedirect').checked) {
+        log(`Redirecting to ${targetUrl}...`, 'success');
+        setTimeout(() => {
+          window.location.href = targetUrl;
+        }, 500);
+      } else {
+        log(`[DRY RUN] Would redirect to: ${targetUrl}`, 'success');
+        log(`Enable "Actually perform redirect" checkbox to navigate`, 'warn');
+      }
+    }
+    
+    // Simulate auto-redirect (mimics production behavior)
+    function simulateAutoRedirect() {
+      log('Starting auto-redirect flow...', 'info');
+      log(`Simulating fetch to config API...`, 'info');
+      
+      // Simulate network delay
+      setTimeout(() => {
+        log(`Config API returned: { activeRegion: "${simulatedActiveRegion}" }`, 'success');
+        
+        const targetUrl = CONNECT_INSTANCES[simulatedActiveRegion];
+        log(`Resolved target URL: ${targetUrl}`, 'info');
+        
+        if (document.getElementById('actualRedirect').checked) {
+          log(`Redirecting...`, 'success');
+          setTimeout(() => {
+            window.location.href = targetUrl;
+          }, 500);
+        } else {
+          log(`[DRY RUN] Would redirect to: ${targetUrl}`, 'success');
+        }
+      }, 300);
+    }
+    
+    // Simulate config API error
+    function simulateConfigError() {
+      log('Starting auto-redirect flow...', 'info');
+      log(`Simulating fetch to config API...`, 'info');
+      
+      setTimeout(() => {
+        log(`Config API error: Network timeout`, 'error');
+        log(`Falling back to default region: ${DEFAULT_REGION}`, 'warn');
+        
+        const targetUrl = CONNECT_INSTANCES[DEFAULT_REGION];
+        log(`Fallback target URL: ${targetUrl}`, 'info');
+        
+        if (document.getElementById('actualRedirect').checked) {
+          log(`Redirecting to fallback...`, 'warn');
+          setTimeout(() => {
+            window.location.href = targetUrl;
+          }, 500);
+        } else {
+          log(`[DRY RUN] Would redirect to fallback: ${targetUrl}`, 'warn');
+        }
+      }, 500);
+    }
+    
+    // Test real config endpoint
+    async function testRealEndpoint() {
+      const endpoint = document.getElementById('configEndpoint').value.trim();
+      
+      if (!endpoint) {
+        log('Please enter a config endpoint URL', 'error');
+        return;
+      }
+      
+      log(`Fetching from: ${endpoint}`, 'info');
+      
+      try {
+        const response = await fetch(endpoint, {
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const config = await response.json();
+        log(`Response: ${JSON.stringify(config)}`, 'success');
+        
+        const activeRegion = config.activeRegion || config.region || DEFAULT_REGION;
+        const targetUrl = CONNECT_INSTANCES[activeRegion] || CONNECT_INSTANCES[DEFAULT_REGION];
+        
+        log(`Active region: ${activeRegion}`, 'info');
+        log(`Would redirect to: ${targetUrl}`, 'success');
+        
+        // Update toggle to match real response
+        setSimulatedRegion(activeRegion);
+        
+      } catch (error) {
+        log(`Fetch error: ${error.message}`, 'error');
+        
+        if (error.message.includes('CORS') || error.message.includes('NetworkError')) {
+          log('Hint: CORS error - the endpoint may not allow browser requests', 'warn');
+          log('This is expected when testing locally against a real API', 'warn');
+        }
+      }
+    }
+    
+    // Initialize
+    log('Test page loaded', 'info');
+    log(`Connect instances configured:`, 'info');
+    log(`  us-east-1 → ${CONNECT_INSTANCES['us-east-1']}`, 'info');
+    log(`  us-west-2 → ${CONNECT_INSTANCES['us-west-2']}`, 'info');
+  </script>
+</body>
+</html>
