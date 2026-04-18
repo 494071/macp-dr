@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Multi-service CloudFront + S3 infrastructure for MACP Connect DR - Path-based routing for instant failover'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+  
+  Region:
+    Type: String
+    Default: us-east-1
+    AllowedValues:
+      - us-east-1
+      - us-west-2
+    Description: AWS Region for deployment
+  
+  PortalDomain:
+    Type: String
+    Default: portal.prod.gsa.dos.macp.cloud
+    Description: Single portal domain for path-based routing (enables instant failover)
+  
+  ConnectInstanceAlias:
+    Type: String
+    Description: Connect instance alias for this region
+    Default: macp-dos-prod-connect-1
+  
+  ACMCertificateArn:
+    Type: String
+    Description: ARN of ACM certificate in us-east-1 (required for CloudFront)
+    Default: arn:aws:acm:us-east-1:417886991978:certificate/e925eda1-90b5-4607-8ad2-c2e924a3bb71
+  
+  WebACLArn:
+    Type: String
+    Description: ARN of WAF Web ACL
+    Default: arn:aws:wafv2:us-east-1:417886991978:global/webacl/FMManagedWebACLV2-mms-waf-acl-US-Only-fortinet-1776365461408/0e665655-35a1-448e-bfaa-e1fc3a90ac70
+  
+  CloudFrontLoggingBucket:
+    Type: String
+    Description: S3 bucket for CloudFront access logs
+    Default: maximus-cloudfront-logs-417886991978-us-east-1
+
+Mappings:
+  RegionalConfig:
+    us-east-1:
+      S3LogBucket: maximus-federal-s3-logs-417886991978-us-east-1
+      ConnectInstance: macp-dos-prod-connect-1
+    us-west-2:
+      S3LogBucket: maximus-federal-s3-logs-417886991978-us-west-2
+      ConnectInstance: macp-dos-prod-connect-2
+
+Resources:
+  # S3 Bucket for CloudFront content (serves all static content)
+  ContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'test-macp-dos-${Environment}-${Region}-cloudfront-content'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: false
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: !FindInMap [RegionalConfig, !Ref Region, S3LogBucket]
+        LogFilePrefix: macp-dos-prod/cloudfront-content
+      Tags:
+        - Key: Name
+          Value: !Sub 'test-macp-dos-${Environment}-${Region}-cloudfront-content'
+        - Key: group_nse
+          Value: macp-dos-prod
+        - Key: provisioner
+          Value: cloudformation
+        - Key: role
+          Value: data-store
+        - Key: Backup
+          Value: No
+        - Key: group_ns
+          Value: macp-dos
+        - Key: spf:environment
+          Value: prod
+        - Key: ChargeCode
+          Value: tbd
+        - Key: Project
+          Value: macp-dos-prod
+        - Key: group_n
+          Value: macp
+        - Key: DataClassification
+          Value: Proprietary
+        - Key: Environment
+          Value: PROD
+        - Key: TechnicalPointOfContact
+          Value: timothyconners@maximus.com
+        - Key: BusinessOwner
+          Value: toddgriffith@maximus.com
+        - Key: AccountName
+          Value: MACP-DOS
+
+  # S3 Bucket Policy - allows only CloudFront OAC
+  ContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContentBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: s3DenyNotEncryptedAPI
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Sub '${ContentBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub '${ContentBucket.Arn}/*'
+            Condition:
+              ArnLike:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${MultiServiceDistribution}'
+
+  # CloudFront Origin Access Control
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'OAC-${Environment}-${Region}-multiservice'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution - path-based routing for instant failover
+  # No custom aliases = both regions can be swapped instantly via DNS
+  MultiServiceDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
+        Comment: !Sub 'Multi-Service Distribution - ${Environment} - ${Region} - Path-Based Routing'
+        
+        # Single portal domain - enables instant failover (no alias swapping needed)
+        Aliases:
+          - !Ref PortalDomain
+        
+        Origins:
+          # Single S3 origin - all content under one bucket
+          - Id: S3Origin
+            DomainName: !GetAtt ContentBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+            ConnectionAttempts: 3
+            ConnectionTimeout: 10
+          
+          # Placeholder for future API Gateway origins
+          # - Id: APIGatewayOrigin
+          #   DomainName: !Sub '${APIGateway}.execute-api.${Region}.amazonaws.com'
+          #   CustomOriginConfig:
+          #     HTTPSPort: 443
+          #     OriginProtocolPolicy: https-only
+        
+        # Path-based routing via CacheBehaviors
+        CacheBehaviors:
+          # /admin/* - Admin portal redirect pages
+          - PathPattern: /admin/*
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          
+          # /agent/* - Agent CCP workspace
+          - PathPattern: /agent/*
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          
+          # /chat/* - Chat widget assets
+          - PathPattern: /chat/*
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          
+          # Future: /api/health/*, /api/config/*, /api/chat/* for API Gateway
+        
+        DefaultCacheBehavior:
+          # Default behavior - serves root and any unmatched paths
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        
+        # Default root object - serves /index.html when accessing root
+        DefaultRootObject: index.html
+        
+        ViewerCertificate:
+          AcmCertificateArn: !Ref ACMCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations:
+              - US
+        
+        WebACLId: !Ref WebACLArn
+        
+        Logging:
+          Bucket: !Sub '${CloudFrontLoggingBucket}.s3.amazonaws.com'
+          Prefix: macp-dos-prod/cloudfront
+          IncludeCookies: false
+        
+        PriceClass: PriceClass_All
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Region
+          Value: !Ref Region
+        - Key: Purpose
+          Value: Multi-Service Distribution - Path-Based Routing
+        - Key: mms:waf-rules
+          Value: usonlyfortinet
+
+Outputs:
+  ContentBucketName:
+    Description: S3 bucket name for content
+    Value: !Ref ContentBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ContentBucket'
+  
+  ContentBucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt ContentBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ContentBucketArn'
+  
+  DistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref MultiServiceDistribution
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionId'
+  
+  DistributionDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt MultiServiceDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionDomain'
+  
+  PortalURL:
+    Description: Portal URL (single domain with path-based routing)
+    Value: !Sub 'https://${PortalDomain}'
+    Export:
+      Name: !Sub '${AWS::StackName}-PortalURL'
+  
+  AdminPath:
+    Description: Admin portal path
+    Value: !Sub 'https://${PortalDomain}/admin/'
+  
+  AgentPath:
+    Description: Agent CCP path
+    Value: !Sub 'https://${PortalDomain}/agent/'
+  
+  ChatPath:
+    Description: Chat widget path
+    Value: !Sub 'https://${PortalDomain}/chat/'
+  
+  ConnectInstance:
+    Description: Connect instance for this region
+    Value: !FindInMap [RegionalConfig, !Ref Region, ConnectInstance]
+  
+  OriginAccessControlId:
+    Description: CloudFront OAC ID
+    Value: !GetAtt CloudFrontOAC.Id
+    Export:
+      Name: !Sub '${AWS::StackName}-OAC-Id'

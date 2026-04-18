@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Route 53 DNS for MACP Connect Portal - Manual Instant Failover'
+
+# This template creates a simple A record pointing to the active CloudFront distribution.
+# Failover is performed by updating the stack with the DR CloudFront domain.
+#
+# FAILOVER PROCEDURE:
+# 1. Update this stack with ActiveCloudFrontDomain = <DR CloudFront domain>
+# 2. DNS propagates in ~60 seconds
+# 3. Traffic routes to DR region immediately
+#
+# FAILBACK PROCEDURE:
+# 1. Update this stack with ActiveCloudFrontDomain = <Primary CloudFront domain>
+# 2. DNS propagates in ~60 seconds
+# 3. Traffic routes back to primary region
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+  
+  PortalDomain:
+    Type: String
+    Default: portal.prod.gsa.dos.macp.cloud
+    Description: Portal domain name
+  
+  HostedZoneId:
+    Type: String
+    Description: Route 53 Hosted Zone ID
+    Default: Z10445293PTGB9ZOBN0G8
+  
+  ActiveCloudFrontDomain:
+    Type: String
+    Description: |
+      CloudFront distribution domain name for the ACTIVE region.
+      Primary (us-east-1): d1vhple0dnr5gl.cloudfront.net
+      DR (us-west-2): d3nh2q65al3cia.cloudfront.net
+    Default: d1vhple0dnr5gl.cloudfront.net
+    AllowedValues:
+      - d1vhple0dnr5gl.cloudfront.net
+      - d3nh2q65al3cia.cloudfront.net
+  
+  # Health check parameters (optional - for monitoring only, not failover)
+  EnableHealthChecks:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable health checks for monitoring (does not trigger automatic failover)
+  
+  PrimaryConnectInstance:
+    Type: String
+    Default: macp-dos-prod-connect-1.my.connect.aws
+    Description: Primary Connect instance URL for health monitoring
+  
+  DRConnectInstance:
+    Type: String
+    Default: macp-dos-prod-connect-2.my.connect.aws
+    Description: DR Connect instance URL for health monitoring
+
+Conditions:
+  CreateHealthChecks: !Equals [!Ref EnableHealthChecks, 'true']
+
+Resources:
+  # Simple A record - point to active CloudFront distribution
+  PortalDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref PortalDomain
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone ID
+        DNSName: !Ref ActiveCloudFrontDomain
+        EvaluateTargetHealth: false
+
+  # Health Check for Primary Connect Instance (monitoring only)
+  PrimaryConnectHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Condition: CreateHealthChecks
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref PrimaryConnectInstance
+        Port: 443
+        ResourcePath: /
+        RequestInterval: 30
+        FailureThreshold: 3
+        MeasureLatency: true
+        Regions:
+          - us-east-1
+          - us-west-2
+          - eu-west-1
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub '${Environment}-primary-connect-health'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: Monitoring - Manual Failover
+
+  # Health Check for DR Connect Instance (monitoring only)
+  DRConnectHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Condition: CreateHealthChecks
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref DRConnectInstance
+        Port: 443
+        ResourcePath: /
+        RequestInterval: 30
+        FailureThreshold: 3
+        MeasureLatency: true
+        Regions:
+          - us-east-1
+          - us-west-2
+          - eu-west-1
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub '${Environment}-dr-connect-health'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: Monitoring - Manual Failover
+
+  # CloudWatch Alarm for Primary (alerting only, no automatic action)
+  PrimaryHealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateHealthChecks
+    Properties:
+      AlarmName: !Sub '${Environment}-primary-connect-unhealthy-ALERT'
+      AlarmDescription: |
+        Primary Connect instance is unhealthy. 
+        Consider manual failover to DR region.
+        Failover command: aws cloudformation update-stack --stack-name macp-dr-dns --parameter-overrides ActiveCloudFrontDomain=d3nh2q65al3cia.cloudfront.net
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref PrimaryConnectHealthCheck
+      TreatMissingData: breaching
+
+  # CloudWatch Alarm for DR (alerting only)
+  DRHealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateHealthChecks
+    Properties:
+      AlarmName: !Sub '${Environment}-dr-connect-unhealthy-ALERT'
+      AlarmDescription: DR Connect instance is unhealthy
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref DRConnectHealthCheck
+      TreatMissingData: breaching
+
+Outputs:
+  PortalURL:
+    Description: Portal URL
+    Value: !Sub 'https://${PortalDomain}'
+  
+  ActiveRegion:
+    Description: Currently active CloudFront distribution
+    Value: !Ref ActiveCloudFrontDomain
+  
+  FailoverCommand:
+    Description: Command to failover to DR region
+    Value: !Sub |
+      aws cloudformation update-stack \
+        --stack-name ${AWS::StackName} \
+        --template-body file://route53-manual-failover.yaml \
+        --parameters ParameterKey=ActiveCloudFrontDomain,ParameterValue=d3nh2q65al3cia.cloudfront.net
+  
+  FailbackCommand:
+    Description: Command to failback to primary region
+    Value: !Sub |
+      aws cloudformation update-stack \
+        --stack-name ${AWS::StackName} \
+        --template-body file://route53-manual-failover.yaml \
+        --parameters ParameterKey=ActiveCloudFrontDomain,ParameterValue=d1vhple0dnr5gl.cloudfront.net
+  
+  PrimaryHealthCheckId:
+    Condition: CreateHealthChecks
+    Description: Health check ID for primary Connect instance
+    Value: !Ref PrimaryConnectHealthCheck
+  
+  DRHealthCheckId:
+    Condition: CreateHealthChecks
+    Description: Health check ID for DR Connect instance
+    Value: !Ref DRConnectHealthCheck

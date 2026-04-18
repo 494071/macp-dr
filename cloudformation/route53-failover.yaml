@@ -1,0 +1,342 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Route 53 Health Checks and Failover DNS for MACP Connect DR'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+  
+  BaseDomain:
+    Type: String
+    Default: prod.gsa.dos.macp.cloud
+    Description: Base domain for custom DNS
+  
+  HostedZoneId:
+    Type: String
+    Description: Route 53 Hosted Zone ID
+    Default: Z10445293PTGB9ZOBN0G8
+  
+  # Primary Region (us-east-1)
+  PrimaryRegion:
+    Type: String
+    Default: us-east-1
+    Description: Primary AWS Region
+  
+  PrimaryCloudFrontDistribution:
+    Type: String
+    Description: CloudFront distribution domain name in primary region (us-east-1)
+    # This will be output from the infrastructure stack
+  
+  PrimaryConnectInstance:
+    Type: String
+    Default: macp-dos-prod-connect-1.my.connect.aws
+    Description: Primary Connect instance URL for health checks
+  
+  # DR Region (us-west-2)
+  DRRegion:
+    Type: String
+    Default: us-west-2
+    Description: DR AWS Region
+  
+  DRCloudFrontDistribution:
+    Type: String
+    Description: CloudFront distribution domain name in DR region (us-west-2)
+  
+  DRConnectInstance:
+    Type: String
+    Default: macp-dos-prod-connect-2.my.connect.aws
+    Description: DR Connect instance URL for health checks
+  
+  HealthCheckFailureThreshold:
+    Type: Number
+    Default: 3
+    Description: Number of consecutive failures before marking unhealthy
+  
+  HealthCheckRequestInterval:
+    Type: Number
+    Default: 30
+    AllowedValues: [10, 30]
+    Description: Interval between health checks in seconds
+
+Resources:
+  # Health Check for Primary Connect Instance (us-east-1)
+  PrimaryConnectHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref PrimaryConnectInstance
+        Port: 443
+        ResourcePath: /
+        RequestInterval: !Ref HealthCheckRequestInterval
+        FailureThreshold: !Ref HealthCheckFailureThreshold
+        MeasureLatency: true
+        Regions:
+          - us-east-1
+          - us-west-2
+          - eu-west-1
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub '${Environment}-primary-connect-health'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Region
+          Value: !Ref PrimaryRegion
+
+  # Health Check for DR Connect Instance (us-west-2)
+  DRConnectHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref DRConnectInstance
+        Port: 443
+        ResourcePath: /
+        RequestInterval: !Ref HealthCheckRequestInterval
+        FailureThreshold: !Ref HealthCheckFailureThreshold
+        MeasureLatency: true
+        Regions:
+          - us-east-1
+          - us-west-2
+          - eu-west-1
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub '${Environment}-dr-connect-health'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Region
+          Value: !Ref DRRegion
+
+  # CloudWatch Alarms for Health Checks
+  PrimaryHealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-primary-connect-unhealthy'
+      AlarmDescription: Primary Connect instance is unhealthy
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref PrimaryConnectHealthCheck
+      TreatMissingData: breaching
+
+  DRHealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-dr-connect-unhealthy'
+      AlarmDescription: DR Connect instance is unhealthy
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref DRConnectHealthCheck
+      TreatMissingData: breaching
+
+  # DNS Records with Failover Routing
+  # admin.prod.gsa.dos.macp.cloud
+  AdminPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'admin.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-admin-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  AdminDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'admin.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-admin-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  # agent.prod.gsa.dos.macp.cloud
+  AgentPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'agent.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-agent-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  AgentDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'agent.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-agent-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  # chat.prod.gsa.dos.macp.cloud
+  ChatPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'chat.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-chat-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  ChatDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'chat.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-chat-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  # chat-api.prod.gsa.dos.macp.cloud
+  ChatAPIPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'chat-api.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-chat-api-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  ChatAPIDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'chat-api.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-chat-api-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  # config.prod.gsa.dos.macp.cloud
+  ConfigPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'config.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-config-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  ConfigDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'config.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-config-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  # health.prod.gsa.dos.macp.cloud
+  HealthPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'health.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-health-primary'
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryConnectHealthCheck
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref PrimaryCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+  HealthDRRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'health.${BaseDomain}'
+      Type: A
+      SetIdentifier: !Sub '${Environment}-health-dr'
+      Failover: SECONDARY
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !Ref DRCloudFrontDistribution
+        EvaluateTargetHealth: false
+
+Outputs:
+  PrimaryHealthCheckId:
+    Description: Health check ID for primary Connect instance
+    Value: !Ref PrimaryConnectHealthCheck
+    Export:
+      Name: !Sub '${AWS::StackName}-PrimaryHealthCheckId'
+  
+  DRHealthCheckId:
+    Description: Health check ID for DR Connect instance
+    Value: !Ref DRConnectHealthCheck
+    Export:
+      Name: !Sub '${AWS::StackName}-DRHealthCheckId'
+  
+  PrimaryAlarmName:
+    Description: CloudWatch alarm for primary health check
+    Value: !Ref PrimaryHealthCheckAlarm
+  
+  DRAlarmName:
+    Description: CloudWatch alarm for DR health check
+    Value: !Ref DRHealthCheckAlarm
+  
+  FailoverDomains:
+    Description: All domains configured with failover
+    Value: admin, agent, chat, chat-api, config, health
