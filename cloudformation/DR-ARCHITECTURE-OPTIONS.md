@@ -361,24 +361,188 @@ Not a viable option.
 
 ---
 
+## Option 6: Single CloudFront with S3 Origin Group (Automatic Origin Failover)
+
+### Architecture
+
+```
+                         Route 53
+                    (portal.prod.gsa.dos.macp.cloud)
+                              │
+                              ▼
+              ┌───────────────────────────────┐
+              │  CloudFront (Global, Single)  │
+              │  - Custom alias configured    │
+              │  - WAF at edge (global)       │
+              │  - Geo-restriction built-in   │
+              │  - Origin Group w/ failover   │
+              └───────────────┬───────────────┘
+                              │
+                  ┌───────────┴───────────┐
+                  ▼                       ▼
+           ┌─────────────┐         ┌─────────────┐
+           │ S3 Primary  │  CRR ─▶ │   S3 DR     │
+           │ us-east-1   │         │  us-west-2  │
+           └─────────────┘         └─────────────┘
+              (Primary)              (Secondary)
+
+        On 5xx/403 from primary → CloudFront automatically
+        serves subsequent requests from DR bucket.
+```
+
+### Key Insight
+
+CloudFront is a **global** service — a regional outage in `us-east-1` does not affect CloudFront itself, only the origins behind it. Origin Groups are purpose-built for this: CloudFront automatically retries failed origin requests against a secondary origin, per-request, in seconds.
+
+Because there is only one CloudFront distribution, the global alias-uniqueness constraint (see Option 1) never comes into play.
+
+### Failover Process
+
+**Automatic (regional S3 outage):**
+
+No operator action. Origin group fails over on configured status codes (`500`, `502`, `503`, `504`, `403`). RTO measured in seconds per edge.
+
+**Manual (drill, partial failure, Connect-only outage):**
+
+Two independent flip mechanics, both single-call and reversible:
+
+1. **Force S3 origin failover** — attach a Deny statement to the primary bucket policy:
+   ```bash
+   aws s3api put-bucket-policy --bucket $PRIMARY_BUCKET \
+     --policy file://bucket-policy-with-deny.json
+   ```
+   CloudFront OAC requests return 403 → origin group fails over to DR bucket.
+
+2. **Force Connect-only failover** — update the runtime config served from the primary bucket:
+   ```bash
+   aws s3 cp config-dr.json s3://$PRIMARY_BUCKET/config/active-region.json
+   aws cloudfront create-invalidation --distribution-id $DIST_ID \
+     --paths "/config/active-region.json"
+   ```
+   UI fetches new config, redirects to DR Connect instance.
+
+**Total Failover Time: ~5-60 seconds** (origin flip: seconds; config flip: invalidation TTL-bound).
+
+### Extending to API Gateway
+
+Add API Gateway origins to the same distribution with a second origin group:
+
+```yaml
+OriginGroups:
+  Items:
+    - Id: S3OriginGroup
+      Members: [S3OriginPrimary, S3OriginDR]
+      FailoverCriteria:
+        StatusCodes: [403, 500, 502, 503, 504]
+    - Id: APIOriginGroup
+      Members: [APIOriginPrimary, APIOriginDR]
+      FailoverCriteria:
+        StatusCodes: [403, 500, 502, 503, 504]
+
+CacheBehaviors:
+  - PathPattern: /api/*
+    TargetOriginId: APIOriginGroup
+```
+
+Manual API Gateway failover is less elegant than S3 — API Gateway has no bucket-policy equivalent. The cleanest equivalent is attaching a deny-all **regional WAF ACL** to the primary API Gateway stage:
+
+```bash
+aws wafv2 associate-web-acl \
+  --web-acl-arn $DENY_ALL_REGIONAL_WEBACL_ARN \
+  --resource-arn $PRIMARY_API_STAGE_ARN
+```
+
+Returns 403 → API origin group fails over. One call, reversible via `disassociate-web-acl`.
+
+### Runtime Region Awareness via config.json
+
+Each bucket serves a different `/config/active-region.json`:
+
+```json
+// us-east-1 bucket
+{ "connectInstance": "macp-dos-prod-connect-1.my.connect.aws", "region": "us-east-1" }
+
+// us-west-2 bucket
+{ "connectInstance": "macp-dos-prod-connect-2.my.connect.aws", "region": "us-west-2" }
+```
+
+When origin group fails over to the DR bucket, the UI naturally receives DR Connect config — no separate coordination needed.
+
+### Required Infrastructure Changes
+
+1. **Split templates:**
+   - `buckets.yaml` — deployed per-region (both primary and DR buckets + CRR)
+   - `distribution.yaml` — deployed once in `us-east-1`, references both bucket ARNs as origins
+2. **S3 Cross-Region Replication (CRR)** on primary bucket → DR bucket
+3. **Bucket policy on DR bucket** must trust the same CloudFront distribution ARN (OAC)
+4. **Origin group block** in CloudFront distribution replacing single `TargetOriginId`
+5. **Route 53** simplifies to a single alias → CloudFront (no `PRIMARY`/`SECONDARY` records)
+6. **`ErrorCachingMinTTL: 0`** on failover status codes (prevents 10s cached 5xx delaying flip)
+7. **Deny-all regional WebACLs** pre-provisioned in each region if API Gateway is in scope
+
+### Pros
+
+- ✅ **Near-instant automatic failover** (~seconds, per-request)
+- ✅ Single CloudFront distribution — no alias-uniqueness problem
+- ✅ CloudFront remains global; unaffected by regional outages
+- ✅ Edge caching preserved (unlike Options 3/4)
+- ✅ Edge WAF + built-in geo-restriction preserved
+- ✅ Single domain, single cert, single WAF config to manage
+- ✅ Manual failover is a single AWS CLI call (bucket policy / WAF association)
+- ✅ Idempotent and reversible flips (good for drills)
+- ✅ Covers both full-region and partial (Connect-only) failures via distinct flip mechanics
+
+### Cons
+
+- ❌ Requires S3 Cross-Region Replication (async; RPO = replication lag, seconds to minutes)
+- ❌ Origin group only triggers on HTTP errors — a regional issue where S3 returns 200s with stale/bad content is not detected
+- ❌ CloudFront caches error responses by default (mitigated by `ErrorCachingMinTTL: 0`)
+- ❌ Non-idempotent API writes may retry on DR during failover (requires idempotency keys)
+- ❌ DR bucket is hot standby, not truly idle (minor cost)
+- ❌ Manual API Gateway flip requires pre-provisioned deny-all WebACL (not as clean as S3)
+- ❌ Operator must maintain exact "normal" bucket policy JSON for clean revert
+
+### When to Use
+
+- Full-region failover is the design goal
+- RTO target is seconds to low minutes
+- Edge caching and edge WAF are valued
+- Operational simplicity of a single distribution is preferred
+- Static + API content share the same failover posture
+
+---
+
 ## Comparison Matrix
 
-| Criteria | Option 1: CloudFront Alias Swap | Option 3: API Gateway |
-|----------|--------------------------------|----------------------|
-| **Failover Time** | 30-45 minutes | ~60 seconds |
-| **Latency (cached)** | 10-30ms | 50-150ms |
-| **Edge Caching** | ✅ Yes | ❌ No |
-| **Edge WAF** | ✅ Yes | ❌ Regional only |
-| **Geo-Restriction** | ✅ Built-in | ⚠️ Regional WAF rules |
-| **S3 Integration** | ✅ Simple (OAC) | ⚠️ Complex |
-| **Setup Complexity** | Low | High |
-| **Monthly Cost** | ~$10-20 | ~$40-60 |
-| **Uses Existing WAF** | ✅ Yes | ❌ Need regional copies |
-| **Same domain both regions** | ❌ No | ✅ Yes |
+| Criteria | Option 1: CloudFront Alias Swap | Option 3: API Gateway | Option 6: CloudFront Origin Group |
+|----------|--------------------------------|----------------------|-----------------------------------|
+| **Failover Time (automatic)** | N/A | ~60 seconds | ~seconds (per-request) |
+| **Failover Time (manual)** | 30-45 minutes | ~60 seconds | ~5-60 seconds |
+| **Latency (cached)** | 10-30ms | 50-150ms | 10-30ms |
+| **Edge Caching** | ✅ Yes | ❌ No | ✅ Yes |
+| **Edge WAF** | ✅ Yes | ❌ Regional only | ✅ Yes |
+| **Geo-Restriction** | ✅ Built-in | ⚠️ Regional WAF rules | ✅ Built-in |
+| **S3 Integration** | ✅ Simple (OAC) | ⚠️ Complex | ✅ Simple (OAC) |
+| **Setup Complexity** | Low | High | Medium (CRR required) |
+| **Monthly Cost** | ~$10-20 | ~$40-60 | ~$15-25 (incl. CRR) |
+| **Uses Existing WAF** | ✅ Yes | ❌ Need regional copies | ✅ Yes |
+| **Same domain both regions** | ❌ No (alias swap) | ✅ Yes | ✅ Yes (single distribution) |
+| **Handles full region outage** | ⚠️ Manual, slow | ✅ Route 53 failover | ✅ Automatic via origin group |
+| **Handles Connect-only failure** | ⚠️ Manual | ✅ Via health check | ✅ Via config.json flip |
 
 ---
 
 ## Recommendation
+
+### For Full-Region Failover: Option 6 (Single CloudFront with Origin Group)
+
+**Choose this if:**
+- Full-region failover is the design goal (this project)
+- You want near-instant automatic failover without losing edge caching/WAF
+- You want a single domain, single distribution to manage
+- RPO tolerates S3 CRR replication lag (seconds to minutes)
+
+This is the recommended path for MACP Connect DR given the full-region failover objective.
 
 ### For Most Use Cases: Option 1 (CloudFront with Alias Swap)
 
@@ -387,7 +551,7 @@ Not a viable option.
 - You're serving primarily static content
 - Edge caching significantly benefits your users
 - You want to leverage existing CloudFront/WAF configuration
-- Operational simplicity is valued
+- Operational simplicity is valued and CRR is undesirable
 
 ### For Critical RTO Requirements: Option 3 (API Gateway)
 
@@ -396,12 +560,15 @@ Not a viable option.
 - Content is mostly dynamic anyway
 - You're already heavily invested in API Gateway
 - Additional complexity and cost are justified
+- Edge caching is not a priority
 
-### Hybrid Approach (Future)
+### Hybrid Approach (Legacy)
 
 Consider a hybrid where:
 - Static content: CloudFront (accept longer failover)
 - APIs: API Gateway with Route 53 failover (instant)
+
+Option 6 supersedes this hybrid by placing API Gateway origins into the same CloudFront with a second origin group, giving both layers automatic failover behind one distribution.
 
 ---
 
@@ -495,4 +662,4 @@ Route 53 then uses failover or weighted routing to direct traffic to the appropr
 ---
 
 *Document created: 2026-04-17*
-*Last updated: 2026-04-17*
+*Last updated: 2026-04-18*
