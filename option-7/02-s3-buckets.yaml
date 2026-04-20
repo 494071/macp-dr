@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Option 7 - S3 Buckets with Cross-Region Replication for DR'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  BucketBaseName:
+    Type: String
+    Default: macp-dr-opt7-content
+    Description: Base name for S3 buckets
+
+  IsPrimaryRegion:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Is this the primary region (us-east-1)? Controls CRR source vs destination.
+
+  ReplicationDestinationBucketArn:
+    Type: String
+    Default: ''
+    Description: ARN of destination bucket for CRR (only needed in primary region)
+
+Conditions:
+  IsPrimary: !Equals [!Ref IsPrimaryRegion, 'true']
+  HasReplicationDestination: !Not [!Equals [!Ref ReplicationDestinationBucketArn, '']]
+  EnableReplication: !And [!Condition IsPrimary, !Condition HasReplicationDestination]
+
+Resources:
+  # S3 Bucket for CloudFront content
+  ContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketBaseName}-${Environment}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: false
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${BucketBaseName}-${Environment}-${AWS::Region}'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: !If [IsPrimary, 'DR-Primary-Content', 'DR-Secondary-Content']
+        - Key: DataClassification
+          Value: Proprietary
+
+  # S3 Bucket Policy - allows CloudFront OAC
+  ContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContentBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Sub '${ContentBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          
+          # CloudFront OAC access - distribution ID will be added after CloudFront is created
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub '${ContentBucket.Arn}/*'
+            Condition:
+              StringLike:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/*'
+
+  # IAM Role for S3 Replication (primary region only)
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimary
+    Properties:
+      RoleName: !Sub '${BucketBaseName}-${Environment}-replication-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReplicationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Source bucket permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetReplicationConfiguration
+                  - s3:ListBucket
+                Resource: !GetAtt ContentBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObjectVersionForReplication
+                  - s3:GetObjectVersionAcl
+                  - s3:GetObjectVersionTagging
+                Resource: !Sub '${ContentBucket.Arn}/*'
+              # Destination bucket permissions
+              - Effect: Allow
+                Action:
+                  - s3:ReplicateObject
+                  - s3:ReplicateDelete
+                  - s3:ReplicateTags
+                Resource: !Sub '${ReplicationDestinationBucketArn}/*'
+
+  # Replication Configuration (applied via custom resource since ReplicationConfiguration
+  # requires the destination bucket to exist first)
+  ReplicationConfigFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableReplication
+    Properties:
+      FunctionName: !Sub '${BucketBaseName}-${Environment}-config-replication'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt ReplicationConfigRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+
+          def handler(event, context):
+              try:
+                  props = event['ResourceProperties']
+                  bucket = props['SourceBucket']
+                  dest_arn = props['DestinationBucketArn']
+                  role_arn = props['ReplicationRoleArn']
+                  
+                  s3 = boto3.client('s3')
+                  
+                  if event['RequestType'] == 'Delete':
+                      s3.delete_bucket_replication(Bucket=bucket)
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  replication_config = {
+                      'Role': role_arn,
+                      'Rules': [{
+                          'ID': 'DR-Replication',
+                          'Status': 'Enabled',
+                          'Priority': 1,
+                          'DeleteMarkerReplication': {'Status': 'Enabled'},
+                          'Filter': {'Prefix': ''},
+                          'Destination': {
+                              'Bucket': dest_arn,
+                              'StorageClass': 'STANDARD'
+                          }
+                      }]
+                  }
+                  
+                  s3.put_bucket_replication(
+                      Bucket=bucket,
+                      ReplicationConfiguration=replication_config
+                  )
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Status': 'Replication enabled'})
+              except Exception as e:
+                  print(f'Error: {e}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  ReplicationConfigRole:
+    Type: AWS::IAM::Role
+    Condition: EnableReplication
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3ReplicationConfig
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutReplicationConfiguration
+                  - s3:GetReplicationConfiguration
+                  - s3:DeleteBucketReplication
+                Resource: !GetAtt ContentBucket.Arn
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt ReplicationRole.Arn
+
+  ReplicationConfigCustomResource:
+    Type: Custom::ReplicationConfig
+    Condition: EnableReplication
+    Properties:
+      ServiceToken: !GetAtt ReplicationConfigFunction.Arn
+      SourceBucket: !Ref ContentBucket
+      DestinationBucketArn: !Ref ReplicationDestinationBucketArn
+      ReplicationRoleArn: !GetAtt ReplicationRole.Arn
+
+Outputs:
+  BucketName:
+    Description: S3 bucket name
+    Value: !Ref ContentBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  BucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt ContentBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+
+  BucketDomainName:
+    Description: S3 bucket regional domain name
+    Value: !GetAtt ContentBucket.RegionalDomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketDomainName'
+
+  ReplicationRoleArn:
+    Description: Replication IAM Role ARN
+    Condition: IsPrimary
+    Value: !GetAtt ReplicationRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ReplicationRoleArn'

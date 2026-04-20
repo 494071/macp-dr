@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Option 7 - DynamoDB Global Table for failover control signal'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  TableName:
+    Type: String
+    Default: macp-dr-prod-failover-state
+    Description: Name of the DynamoDB Global Table
+
+Resources:
+  # DynamoDB Global Table - replicated to both regions
+  FailoverStateTable:
+    Type: AWS::DynamoDB::GlobalTable
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      
+      AttributeDefinitions:
+        - AttributeName: config_key
+          AttributeType: S
+      
+      KeySchema:
+        - AttributeName: config_key
+          KeyType: HASH
+      
+      # Replicas in both regions
+      Replicas:
+        - Region: us-east-1
+          PointInTimeRecoverySpecification:
+            PointInTimeRecoveryEnabled: true
+          Tags:
+            - Key: Environment
+              Value: !Ref Environment
+            - Key: Purpose
+              Value: DR-Failover-Control
+            - Key: Region
+              Value: us-east-1
+        
+        - Region: us-west-2
+          PointInTimeRecoverySpecification:
+            PointInTimeRecoveryEnabled: true
+          Tags:
+            - Key: Environment
+              Value: !Ref Environment
+            - Key: Purpose
+              Value: DR-Failover-Control
+            - Key: Region
+              Value: us-west-2
+      
+      # Enable streams for audit/monitoring (optional)
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  # Custom resource to seed initial data
+  SeedDataFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${TableName}-seed-data'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt SeedDataRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import os
+          from datetime import datetime
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      dynamodb = boto3.client('dynamodb', region_name='us-east-1')
+                      table_name = os.environ['TABLE_NAME']
+                      
+                      # Seed initial active_region item
+                      dynamodb.put_item(
+                          TableName=table_name,
+                          Item={
+                              'config_key': {'S': 'active_region'},
+                              'active_region': {'S': 'us-east-1'},
+                              'updated_at': {'S': datetime.utcnow().isoformat() + 'Z'},
+                              'updated_by': {'S': 'cloudformation-init'},
+                              'reason': {'S': 'Initial deployment - primary region active'}
+                          },
+                          ConditionExpression='attribute_not_exists(config_key)'
+                      )
+                      print('Seeded initial data')
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except dynamodb.exceptions.ConditionalCheckFailedException:
+                  # Item already exists - that's fine
+                  print('Item already exists, skipping seed')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f'Error: {e}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  SeedDataRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${TableName}-seed-data-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !Sub 'arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${TableName}'
+
+  SeedDataCustomResource:
+    Type: Custom::SeedData
+    DependsOn: FailoverStateTable
+    Properties:
+      ServiceToken: !GetAtt SeedDataFunction.Arn
+
+Outputs:
+  TableName:
+    Description: DynamoDB Global Table name
+    Value: !Ref TableName
+    Export:
+      Name: !Sub '${AWS::StackName}-TableName'
+
+  TableArnEast:
+    Description: DynamoDB Table ARN (us-east-1)
+    Value: !Sub 'arn:aws:dynamodb:us-east-1:${AWS::AccountId}:table/${TableName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-TableArnEast'
+
+  TableArnWest:
+    Description: DynamoDB Table ARN (us-west-2)
+    Value: !Sub 'arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/${TableName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-TableArnWest'
+
+  StreamArn:
+    Description: DynamoDB Stream ARN (for monitoring/alerting)
+    Value: !GetAtt FailoverStateTable.StreamArn
+    Export:
+      Name: !Sub '${AWS::StackName}-StreamArn'

@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Option 7 - CloudFront Distribution with Origin Group and Lambda@Edge'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  # Subdomain aliases
+  AdminDomain:
+    Type: String
+    Default: admin.prod.gsa.dos.macp.cloud
+    Description: Admin portal subdomain
+
+  AgentDomain:
+    Type: String
+    Default: agent.prod.gsa.dos.macp.cloud
+    Description: Agent CCP subdomain
+
+  ChatDomain:
+    Type: String
+    Default: chat.prod.gsa.dos.macp.cloud
+    Description: Chat widget subdomain
+
+  # S3 Origins
+  PrimaryBucketDomain:
+    Type: String
+    Description: Regional domain name of primary S3 bucket (us-east-1)
+    Default: macp-dr-opt7-content-prod-us-east-1.s3.us-east-1.amazonaws.com
+
+  DRBucketDomain:
+    Type: String
+    Description: Regional domain name of DR S3 bucket (us-west-2)
+    Default: macp-dr-opt7-content-prod-us-west-2.s3.us-west-2.amazonaws.com
+
+  # Lambda@Edge
+  LambdaEdgeVersionArn:
+    Type: String
+    Description: ARN of the Lambda@Edge version for origin routing
+
+  # Security
+  ACMCertificateArn:
+    Type: String
+    Description: ARN of ACM certificate in us-east-1 (required for CloudFront)
+    Default: arn:aws:acm:us-east-1:417886991978:certificate/e925eda1-90b5-4607-8ad2-c2e924a3bb71
+
+  WebACLArn:
+    Type: String
+    Description: ARN of WAF Web ACL
+    Default: arn:aws:wafv2:us-east-1:417886991978:global/webacl/FMManagedWebACLV2-mms-waf-acl-US-Only-fortinet-1776365461408/0e665655-35a1-448e-bfaa-e1fc3a90ac70
+
+  # Logging
+  CloudFrontLoggingBucket:
+    Type: String
+    Description: S3 bucket for CloudFront access logs
+    Default: maximus-cloudfront-logs-417886991978-us-east-1
+
+Resources:
+  # CloudFront Origin Access Control for S3
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'OAC-${Environment}-option7-dr'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+        Description: OAC for Option 7 DR CloudFront distribution
+
+  # CloudFront Distribution with Origin Group
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Comment: !Sub 'Option 7 DR Distribution - ${Environment} - Lambda@Edge + Origin Group'
+        
+        # Multiple subdomain aliases
+        Aliases:
+          - !Ref AdminDomain
+          - !Ref AgentDomain
+          - !Ref ChatDomain
+        
+        # Define both S3 origins
+        Origins:
+          # Primary origin (us-east-1)
+          - Id: S3PrimaryOrigin
+            DomainName: !Ref PrimaryBucketDomain
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+            ConnectionAttempts: 3
+            ConnectionTimeout: 10
+          
+          # DR origin (us-west-2)
+          - Id: S3DROrigin
+            DomainName: !Ref DRBucketDomain
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+            ConnectionAttempts: 3
+            ConnectionTimeout: 10
+        
+        # Origin Group for automatic failover (safety net)
+        OriginGroups:
+          Quantity: 1
+          Items:
+            - Id: S3OriginGroup
+              Members:
+                Quantity: 2
+                Items:
+                  - OriginId: S3PrimaryOrigin
+                  - OriginId: S3DROrigin
+              FailoverCriteria:
+                StatusCodes:
+                  Quantity: 5
+                  Items:
+                    - 403  # Bucket policy deny (used for manual failover drill)
+                    - 404  # Object not found
+                    - 500  # Internal server error
+                    - 502  # Bad gateway
+                    - 503  # Service unavailable
+        
+        # Default behavior with Lambda@Edge
+        DefaultCacheBehavior:
+          TargetOriginId: S3OriginGroup
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          
+          # Managed cache policy: CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          
+          # Lambda@Edge for proactive routing
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref LambdaEdgeVersionArn
+              IncludeBody: false
+        
+        # Path-specific behaviors (all use same origin group and Lambda@Edge)
+        CacheBehaviors:
+          # /admin/* - Admin portal
+          - PathPattern: /admin/*
+            TargetOriginId: S3OriginGroup
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref LambdaEdgeVersionArn
+                IncludeBody: false
+          
+          # /agent/* - Agent CCP workspace
+          - PathPattern: /agent/*
+            TargetOriginId: S3OriginGroup
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref LambdaEdgeVersionArn
+                IncludeBody: false
+          
+          # /chat/* - Chat widget assets
+          - PathPattern: /chat/*
+            TargetOriginId: S3OriginGroup
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            LambdaFunctionAssociations:
+              - EventType: origin-request
+                LambdaFunctionARN: !Ref LambdaEdgeVersionArn
+                IncludeBody: false
+        
+        DefaultRootObject: index.html
+        
+        # Custom error responses - minimal caching for failover responsiveness
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 500
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 502
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 503
+            ErrorCachingMinTTL: 0
+        
+        # SSL/TLS
+        ViewerCertificate:
+          AcmCertificateArn: !Ref ACMCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        
+        # Geo restriction (US only)
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations:
+              - US
+        
+        # WAF
+        WebACLId: !Ref WebACLArn
+        
+        # Logging
+        Logging:
+          Bucket: !Sub '${CloudFrontLoggingBucket}.s3.amazonaws.com'
+          Prefix: macp-dr-opt7/cloudfront
+          IncludeCookies: false
+        
+        PriceClass: PriceClass_All
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: Option7-DR-Distribution
+        - Key: mms:waf-rules
+          Value: usonlyfortinet
+
+Outputs:
+  DistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref Distribution
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionId'
+
+  DistributionDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt Distribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionDomain'
+
+  AdminURL:
+    Description: Admin portal URL
+    Value: !Sub 'https://${AdminDomain}'
+
+  AgentURL:
+    Description: Agent CCP URL
+    Value: !Sub 'https://${AgentDomain}'
+
+  ChatURL:
+    Description: Chat widget URL
+    Value: !Sub 'https://${ChatDomain}'
+
+  OACId:
+    Description: Origin Access Control ID (add to S3 bucket policies)
+    Value: !GetAtt CloudFrontOAC.Id
+    Export:
+      Name: !Sub '${AWS::StackName}-OACId'
+
+  DistributionArn:
+    Description: CloudFront distribution ARN (for S3 bucket policies)
+    Value: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionArn'
