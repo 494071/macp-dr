@@ -37,6 +37,14 @@
       font-size: 14px;
       color: #888;
     }
+    .section-title {
+      text-align: center;
+      margin: 30px 0 15px 0;
+      color: #888;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
     .container {
       display: flex;
       gap: 20px;
@@ -55,11 +63,43 @@
       font-weight: bold;
       font-size: 14px;
     }
+    .panel-header.api {
+      background: #2d4a22;
+    }
     iframe {
       width: 350px;
       height: 200px;
       border: none;
       background: white;
+    }
+    .api-response {
+      width: 350px;
+      height: 200px;
+      padding: 15px;
+      box-sizing: border-box;
+      background: #0d1117;
+      color: #7ee787;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 13px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .api-response.error {
+      color: #f85149;
+    }
+    .region-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-left: 10px;
+    }
+    .region-east {
+      background: #1f6feb;
+    }
+    .region-west {
+      background: #a371f7;
     }
   </style>
 </head>
@@ -71,6 +111,8 @@
     <button onclick="stopAutoRefresh()">⏹️ Stop</button>
     <span class="status" id="status"></span>
   </div>
+
+  <div class="section-title">Static Content (S3)</div>
   <div class="container">
     <div class="panel">
       <div class="panel-header">👤 Admin</div>
@@ -86,14 +128,48 @@
     </div>
   </div>
 
+  <div class="section-title">API Gateway</div>
+  <div class="container">
+    <div class="panel">
+      <div class="panel-header api">🔌 Chat API <span id="api-region-badge" class="region-badge"></span></div>
+      <div id="chat-api" class="api-response">Loading...</div>
+    </div>
+  </div>
+
   <script>
     let intervalId = null;
+
+    async function fetchChatApi() {
+      const container = document.getElementById('chat-api');
+      const badge = document.getElementById('api-region-badge');
+      try {
+        const response = await fetch(`https://chat-api.prod.gsa.dos.macp.cloud/?t=${Date.now()}`);
+        const data = await response.json();
+        container.textContent = JSON.stringify(data, null, 2);
+        container.className = 'api-response';
+        
+        // Update region badge
+        if (data.region === 'us-east-1') {
+          badge.textContent = 'us-east-1';
+          badge.className = 'region-badge region-east';
+        } else if (data.region === 'us-west-2') {
+          badge.textContent = 'us-west-2';
+          badge.className = 'region-badge region-west';
+        }
+      } catch (error) {
+        container.textContent = `Error: ${error.message}`;
+        container.className = 'api-response error';
+        badge.textContent = '';
+        badge.className = 'region-badge';
+      }
+    }
 
     function refreshAll() {
       const timestamp = Date.now();
       document.getElementById('admin').src = `https://admin.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
       document.getElementById('agent').src = `https://agent.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
       document.getElementById('chat').src = `https://chat.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
+      fetchChatApi();
       document.getElementById('status').textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
     }
 
@@ -111,6 +187,9 @@
       }
       document.getElementById('status').textContent = 'Auto-refresh OFF';
     }
+
+    // Initial load
+    fetchChatApi();
   </script>
 </body>
 </html>
