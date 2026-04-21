@@ -17,12 +17,13 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 <east|west|status>"
+    echo "Usage: $0 <east|west|status|invalidate>"
     echo ""
     echo "Commands:"
-    echo "  east    - Failover to us-east-1 (Primary)"
-    echo "  west    - Failover to us-west-2 (DR)"
-    echo "  status  - Check current active region"
+    echo "  east        - Failover to us-east-1 (Primary)"
+    echo "  west        - Failover to us-west-2 (DR)"
+    echo "  status      - Check current active region"
+    echo "  invalidate  - Invalidate CloudFront cache only"
     echo ""
     exit 1
 }
@@ -33,6 +34,19 @@ get_status() {
         --key '{"config_key":{"S":"active_region"}}' \
         --query 'Item.active_region.S' \
         --output text
+}
+
+invalidate_cache() {
+    echo -e "${YELLOW}Invalidating CloudFront cache...${NC}"
+    local invalidation_id=$(aws cloudfront create-invalidation \
+        --distribution-id "$DISTRIBUTION_ID" \
+        --paths "/*" \
+        --query 'Invalidation.Id' \
+        --output text)
+    
+    echo -e "${GREEN}✓ Cache invalidation started: $invalidation_id${NC}"
+    echo ""
+    echo "Note: Invalidation takes ~30-60 seconds to propagate globally."
 }
 
 failover() {
@@ -98,6 +112,9 @@ case "${1:-}" in
         ;;
     status)
         echo "Active region: $(get_status)"
+        ;;
+    invalidate)
+        invalidate_cache
         ;;
     *)
         usage
