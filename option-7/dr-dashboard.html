@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MACP DR Dashboard</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    .controls {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    button {
+      background: #4a90d9;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 0 10px;
+    }
+    button:hover {
+      background: #357abd;
+    }
+    .status {
+      display: inline-block;
+      margin-left: 20px;
+      font-size: 14px;
+      color: #888;
+    }
+    .container {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .panel {
+      background: #16213e;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .panel-header {
+      background: #0f3460;
+      padding: 10px 15px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    iframe {
+      width: 350px;
+      height: 200px;
+      border: none;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔄 MACP DR Dashboard</h1>
+  <div class="controls">
+    <button onclick="refreshAll()">🔄 Refresh All</button>
+    <button onclick="autoRefresh()">⏱️ Auto-Refresh (5s)</button>
+    <button onclick="stopAutoRefresh()">⏹️ Stop</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div class="container">
+    <div class="panel">
+      <div class="panel-header">👤 Admin</div>
+      <iframe id="admin" src="https://admin.prod.gsa.dos.macp.cloud/"></iframe>
+    </div>
+    <div class="panel">
+      <div class="panel-header">🎧 Agent</div>
+      <iframe id="agent" src="https://agent.prod.gsa.dos.macp.cloud/"></iframe>
+    </div>
+    <div class="panel">
+      <div class="panel-header">💬 Chat</div>
+      <iframe id="chat" src="https://chat.prod.gsa.dos.macp.cloud/"></iframe>
+    </div>
+  </div>
+
+  <script>
+    let intervalId = null;
+
+    function refreshAll() {
+      const timestamp = Date.now();
+      document.getElementById('admin').src = `https://admin.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
+      document.getElementById('agent').src = `https://agent.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
+      document.getElementById('chat').src = `https://chat.prod.gsa.dos.macp.cloud/?t=${timestamp}`;
+      document.getElementById('status').textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+    }
+
+    function autoRefresh() {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(refreshAll, 5000);
+      document.getElementById('status').textContent = 'Auto-refresh ON (every 5s)';
+      refreshAll();
+    }
+
+    function stopAutoRefresh() {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      document.getElementById('status').textContent = 'Auto-refresh OFF';
+    }
+  </script>
+</body>
+</html>
