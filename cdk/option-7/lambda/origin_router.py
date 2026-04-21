@@ -2,11 +2,15 @@
 Lambda@Edge Origin Router for Option 7 DR Architecture
 
 This function runs on CloudFront origin-request events and routes traffic
-to the active region's S3 bucket based on a DynamoDB control signal.
+to the active region based on a DynamoDB control signal.
+
+Supports:
+- S3 buckets for static content (admin, agent, chat subdomains)
+- API Gateway for APIs (chat-api subdomain)
 
 Features:
 - Dynamic origin switching based on DynamoDB control signal
-- SigV4 request signing for S3 authentication (replaces OAC)
+- SigV4 request signing for S3 authentication
 - Multi-region DynamoDB read with fallback (us-east-1 → us-west-2)
 - In-memory caching (~15s TTL) to reduce DDB calls
 - Last-known-good fallback if both DDB replicas fail
@@ -29,7 +33,8 @@ logger.setLevel(logging.INFO)
 TABLE_NAME = 'macp-dr-prod-failover-state'
 CACHE_TTL = 15  # seconds
 
-ORIGINS = {
+# S3 Origins for static content
+S3_ORIGINS = {
     'us-east-1': {
         'bucket': 'macp-dr-opt7-content-prod-us-east-1',
         'domainName': 'macp-dr-opt7-content-prod-us-east-1.s3.us-east-1.amazonaws.com',
@@ -38,6 +43,20 @@ ORIGINS = {
     'us-west-2': {
         'bucket': 'macp-dr-opt7-content-prod-us-west-2',
         'domainName': 'macp-dr-opt7-content-prod-us-west-2.s3.us-west-2.amazonaws.com',
+        'region': 'us-west-2'
+    }
+}
+
+# API Gateway Origins for APIs
+API_ORIGINS = {
+    'us-east-1': {
+        'domainName': '8ct6cwf9ja.execute-api.us-east-1.amazonaws.com',
+        'path': '/prod',
+        'region': 'us-east-1'
+    },
+    'us-west-2': {
+        'domainName': 'wcws15iu26.execute-api.us-west-2.amazonaws.com',
+        'path': '/prod',
         'region': 'us-west-2'
     }
 }
@@ -92,48 +111,68 @@ def get_active_region():
 def sign_s3_request(request, bucket, region, uri):
     """
     Sign the request with SigV4 for S3 authentication.
-    This replaces OAC - Lambda signs requests using its IAM role credentials.
     """
     session = boto3.Session()
     credentials = session.get_credentials().get_frozen_credentials()
     
-    # Build the S3 URL
     host = f"{bucket}.s3.{region}.amazonaws.com"
     url = f"https://{host}{uri}"
     
-    # S3 requires x-amz-content-sha256 header (UNSIGNED-PAYLOAD for GET requests)
     headers = {
         'Host': host,
         'x-amz-content-sha256': 'UNSIGNED-PAYLOAD'
     }
     
-    # Create AWS request for signing
     aws_request = AWSRequest(method='GET', url=url, headers=headers)
-    
-    # Sign the request
     SigV4Auth(credentials, 's3', region).add_auth(aws_request)
     
-    # Update CloudFront request with signed headers
     request['origin'] = {
         's3': {
             'domainName': host,
             'region': region,
-            'authMethod': 'none',  # We're handling auth ourselves
+            'authMethod': 'none',
             'path': '',
             'customHeaders': {}
         }
     }
     
-    # Set the Host header
     request['headers']['host'] = [{'key': 'Host', 'value': host}]
     
-    # Add SigV4 auth headers
     for header_name, header_value in aws_request.headers.items():
         header_lower = header_name.lower()
         if header_lower in ['authorization', 'x-amz-date', 'x-amz-security-token', 'x-amz-content-sha256']:
             request['headers'][header_lower] = [{'key': header_name, 'value': header_value}]
     
-    logger.info(f"Signed request for s3://{bucket}{uri} in {region}")
+    logger.info(f"Signed S3 request for s3://{bucket}{uri} in {region}")
+    return request
+
+
+def route_to_api_gateway(request, api_origin, uri):
+    """
+    Route request to API Gateway origin.
+    API Gateway handles its own authentication, no signing needed.
+    """
+    host = api_origin['domainName']
+    path = api_origin['path']
+    
+    # Set the origin to API Gateway
+    request['origin'] = {
+        'custom': {
+            'domainName': host,
+            'port': 443,
+            'protocol': 'https',
+            'path': path,
+            'sslProtocols': ['TLSv1.2'],
+            'readTimeout': 30,
+            'keepaliveTimeout': 5,
+            'customHeaders': {}
+        }
+    }
+    
+    # Update Host header for API Gateway
+    request['headers']['host'] = [{'key': 'Host', 'value': host}]
+    
+    logger.info(f"Routing to API Gateway: {host}{path}{uri}")
     return request
 
 
@@ -141,13 +180,9 @@ def handler(event, context):
     """
     Lambda@Edge origin-request handler.
     
-    Routes traffic to the active region's S3 bucket based on DynamoDB control signal.
-    Signs requests with SigV4 for S3 authentication.
-    
-    Also rewrites the URI path based on subdomain:
-    - admin.prod.gsa.dos.macp.cloud/foo → /admin/foo
-    - agent.prod.gsa.dos.macp.cloud/foo → /agent/foo
-    - chat.prod.gsa.dos.macp.cloud/foo  → /chat/foo
+    Routes traffic based on subdomain:
+    - admin, agent, chat → S3 bucket (static content)
+    - chat-api → API Gateway (APIs)
     """
     request = event['Records'][0]['cf']['request']
     
@@ -164,34 +199,41 @@ def handler(event, context):
     subdomain = original_host.split('.')[0] if original_host else ''
     logger.info(f"Subdomain: {subdomain}, URI: {request['uri']}")
     
-    # Map subdomain to folder path
-    folder_map = {'admin': '/admin', 'agent': '/agent', 'chat': '/chat'}
-    folder_prefix = folder_map.get(subdomain, '')
-    
-    # Rewrite URI to include folder prefix
-    original_uri = request['uri']
-    if folder_prefix and not original_uri.startswith(folder_prefix):
-        request['uri'] = folder_prefix + original_uri
-        logger.info(f"URI rewrite: {original_uri} → {request['uri']}")
-    
-    # Append index.html for directory requests
-    if request['uri'].endswith('/'):
-        request['uri'] += 'index.html'
-        logger.info(f"Added index.html: {request['uri']}")
-    
     # Get active region from DynamoDB
     active_region = get_active_region()
-    origin_config = ORIGINS.get(active_region, ORIGINS['us-east-1'])
     
-    # Sign request and switch origin
-    request = sign_s3_request(
-        request,
-        origin_config['bucket'],
-        origin_config['region'],
-        request['uri']
-    )
+    # Route based on subdomain type
+    if subdomain == 'chat-api':
+        # API Gateway routing
+        api_origin = API_ORIGINS.get(active_region, API_ORIGINS['us-east-1'])
+        request = route_to_api_gateway(request, api_origin, request['uri'])
+        logger.info(f"API routing to {active_region}: {request['uri']}")
+    else:
+        # S3 static content routing
+        folder_map = {'admin': '/admin', 'agent': '/agent', 'chat': '/chat'}
+        folder_prefix = folder_map.get(subdomain, '')
+        
+        # Rewrite URI to include folder prefix
+        original_uri = request['uri']
+        if folder_prefix and not original_uri.startswith(folder_prefix):
+            request['uri'] = folder_prefix + original_uri
+            logger.info(f"URI rewrite: {original_uri} → {request['uri']}")
+        
+        # Append index.html for directory requests
+        if request['uri'].endswith('/'):
+            request['uri'] += 'index.html'
+            logger.info(f"Added index.html: {request['uri']}")
+        
+        # Sign request and route to S3
+        s3_origin = S3_ORIGINS.get(active_region, S3_ORIGINS['us-east-1'])
+        request = sign_s3_request(
+            request,
+            s3_origin['bucket'],
+            s3_origin['region'],
+            request['uri']
+        )
+        logger.info(f"S3 routing to {active_region}: {request['uri']}")
     
-    logger.info(f"Routing to {active_region}: {request['uri']}")
     return request
 
 
@@ -203,7 +245,7 @@ if __name__ == '__main__':
                 'request': {
                     'uri': '/',
                     'headers': {
-                        'x-original-host': [{'key': 'x-original-host', 'value': 'admin.prod.gsa.dos.macp.cloud'}]
+                        'x-original-host': [{'key': 'x-original-host', 'value': 'chat-api.prod.gsa.dos.macp.cloud'}]
                     }
                 }
             }

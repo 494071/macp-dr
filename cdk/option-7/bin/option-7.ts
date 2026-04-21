@@ -37,6 +37,7 @@ const config = {
     'admin.prod.gsa.dos.macp.cloud',
     'agent.prod.gsa.dos.macp.cloud',
     'chat.prod.gsa.dos.macp.cloud',
+    'chat-api.prod.gsa.dos.macp.cloud',
   ],
   loggingBucket: 'maximus-cloudfront-logs-417886991978-us-east-1',
   s3LoggingBucketEast: 'maximus-federal-s3-logs-417886991978-us-east-1',
