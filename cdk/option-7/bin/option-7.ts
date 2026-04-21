@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Option7Stack } from '../lib/option-7-stack';
 import { DrBucketStack } from '../lib/dr-bucket-stack';
+import { ChatApiStack } from '../lib/chat-api-stack';
 
 const app = new cdk.App();
 
@@ -60,8 +61,30 @@ const mainStack = new Option7Stack(app, 'Option7Stack', {
   crossRegionReferences: true,
 });
 
-// Apply tags to all resources in both stacks
-for (const [key, value] of Object.entries(projectTags)) {
-  cdk.Tags.of(drBucketStack).add(key, value);
-  cdk.Tags.of(mainStack).add(key, value);
+// Chat API Stack - Primary (us-east-1)
+const chatApiEast = new ChatApiStack(app, 'ChatApiStackEast', {
+  env: { account: accountId, region: 'us-east-1' },
+  environment,
+  certificateArn: 'arn:aws:acm:us-east-1:417886991978:certificate/e925eda1-90b5-4607-8ad2-c2e924a3bb71',
+  hostedZoneId: config.hostedZoneId,
+  hostedZoneName: config.hostedZoneName,
+  customDomainPrefix: 'east-api',
+});
+
+// Chat API Stack - DR (us-west-2)
+const chatApiWest = new ChatApiStack(app, 'ChatApiStackWest', {
+  env: { account: accountId, region: 'us-west-2' },
+  environment,
+  certificateArn: 'arn:aws:acm:us-west-2:417886991978:certificate/676a38de-1645-409c-b35e-8ce710f70e72',
+  hostedZoneId: config.hostedZoneId,
+  hostedZoneName: config.hostedZoneName,
+  customDomainPrefix: 'west-api',
+});
+
+// Apply tags to all stacks
+const allStacks = [drBucketStack, mainStack, chatApiEast, chatApiWest];
+for (const stack of allStacks) {
+  for (const [key, value] of Object.entries(projectTags)) {
+    cdk.Tags.of(stack).add(key, value);
+  }
 }
