@@ -4,7 +4,9 @@
 
 ### Executive Summary
 
-Option 7 provides **proactive failover control** for MACP Connect's static web applications (Admin, Agent, Chat portals) using AWS Lambda@Edge and DynamoDB Global Tables. This solution enables manual, controlled failover between us-east-1 (Primary) and us-west-2 (DR) regions with sub-minute switching time.
+Option 7 provides **manual, controlled failover** for MACP Connect's static web applications (Admin, Agent, Chat portals) using AWS Lambda@Edge and DynamoDB Global Tables. This solution enables on-demand failover between us-east-1 (Primary) and us-west-2 (DR) regions with sub-minute switching time.
+
+**Key Design Decision**: No automatic failover. All failovers are explicitly triggered by operators via DynamoDB, ensuring full control over when and why traffic switches regions.
 
 ---
 
@@ -76,7 +78,7 @@ Option 7 provides **proactive failover control** for MACP Connect's static web a
   - Extracts subdomain from `x-original-host` header
   - Rewrites URI: `/` → `/{subdomain}/index.html`
   - Signs request with SigV4 for S3 authentication
-  - Routes to appropriate regional S3 bucket
+  - **Routes to active region's S3 bucket** (no automatic failover)
 
 ### 4. DynamoDB Global Table
 - **Table Name**: `macp-dr-prod-failover-state`
@@ -243,7 +245,7 @@ aws s3 sync ./content/ s3://macp-dr-opt7-content-prod-us-west-2/
 
 | Feature | Benefit |
 |---------|---------|
-| **Proactive Control** | Failover on-demand, not just on failure |
+| **Manual Control Only** | No automatic failover - operators decide when to switch |
 | **Single Distribution** | No DNS propagation delays |
 | **Sub-minute Failover** | ~60 seconds for full transition |
 | **Cost Effective** | ~$3/1M requests |
@@ -258,6 +260,7 @@ aws s3 sync ./content/ s3://macp-dr-opt7-content-prod-us-west-2/
 - Requires cache invalidation for immediate failover
 - Lambda@Edge doesn't support ARM64 (must use x86_64)
 - Content must be synced to both S3 buckets
+- **No automatic failover** - if primary region fails, manual intervention required
 
 ---
 
