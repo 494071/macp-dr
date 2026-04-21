@@ -146,24 +146,17 @@ function handler(event) {
       comment: 'Passes original Host header to Lambda@Edge for subdomain routing',
     });
 
-    // S3 Origins - Lambda@Edge handles SigV4 signing (no OAC needed)
-    // We still define origins for CloudFront, but Lambda will override them
+    // S3 Origin - Lambda@Edge handles routing and SigV4 signing
+    // We define a single origin for CloudFront, but Lambda overrides it based on DynamoDB
     const primaryOrigin = new origins.S3Origin(this.primaryBucket, {
       originAccessIdentity: undefined, // No OAI/OAC - Lambda signs requests
     });
-    const drOrigin = new origins.S3Origin(drBucket as s3.Bucket, {
-      originAccessIdentity: undefined,
-    });
 
-    // Origin Group for automatic failover (acts as safety net)
-    const originGroup = new origins.OriginGroup({
-      primaryOrigin: primaryOrigin,
-      fallbackOrigin: drOrigin,
-      fallbackStatusCodes: [403, 404, 500, 502, 503],
-    });
+    // Note: No Origin Group - manual failover only via DynamoDB
+    // Lambda@Edge reads active_region and routes to the appropriate S3 bucket
 
     // Custom cache policy that includes x-original-host header in cache key
-    // This ensures each subdomain has its own cache entries without breaking OAC signing
+    // This ensures each subdomain has its own cache entries
     const cachePolicy = new cloudfront.CachePolicy(this, 'CachePolicy', {
       cachePolicyName: `macp-dr-${environment}-cache-policy`,
       defaultTtl: cdk.Duration.days(1),
@@ -178,7 +171,7 @@ function handler(event) {
 
     // Default behavior with Lambda@Edge and CloudFront Function
     const defaultBehavior: cloudfront.BehaviorOptions = {
-      origin: originGroup,
+      origin: primaryOrigin,  // Lambda@Edge overrides this based on DynamoDB
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
       cachedMethods: cloudfront.CachedMethods.CACHE_GET_HEAD,
