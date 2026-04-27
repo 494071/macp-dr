@@ -177,10 +177,14 @@ function handler(event) {
       cachedMethods: cloudfront.CachedMethods.CACHE_GET_HEAD,
       compress: true,
       cachePolicy: cachePolicy,
-      // Origin request policy to forward x-original-host header to Lambda@Edge
+      // Origin request policy to forward headers to Lambda@Edge
       originRequestPolicy: new cloudfront.OriginRequestPolicy(this, 'OriginRequestPolicy', {
         originRequestPolicyName: `macp-dr-${environment}-origin-request-policy`,
-        headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList('x-original-host'),
+        headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
+          'x-original-host',
+          'CloudFront-Viewer-Country',
+          'CloudFront-Viewer-City'
+        ),
       }),
       functionAssociations: [{
         function: hostPassthroughFunction,

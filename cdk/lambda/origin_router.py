@@ -184,20 +184,47 @@ def get_active_region(event=None):
     return fallback
 
 
+def get_edge_location(event):
+    """
+    Extract CloudFront edge location info from the event.
+    
+    Uses CloudFront-Viewer-City and CloudFront-Viewer-Country headers
+    if configured in the origin request policy, otherwise returns 'unknown'.
+    """
+    try:
+        cf = event['Records'][0]['cf']
+        request = cf.get('request', {})
+        headers = request.get('headers', {})
+        
+        # Check for CloudFront viewer headers (must be configured in origin request policy)
+        city = ''
+        country = ''
+        
+        if 'cloudfront-viewer-city' in headers:
+            city = headers['cloudfront-viewer-city'][0].get('value', '')
+        if 'cloudfront-viewer-country' in headers:
+            country = headers['cloudfront-viewer-country'][0].get('value', '')
+        
+        if city and country:
+            return f"{city}, {country}"
+        elif city:
+            return city
+        elif country:
+            return country
+        
+        return 'unknown'
+    except Exception as e:
+        logger.debug(f"Could not extract edge location: {e}")
+        return 'unknown'
+
+
 def get_health_data(event):
     """
     Get full health data from DynamoDB for the health endpoint.
     Returns all row data plus metadata about the request.
     """
     # Extract edge location from request
-    edge_location = 'unknown'
-    try:
-        config = event['Records'][0]['cf'].get('config', {})
-        request_id = config.get('requestId', '')
-        if request_id and '.' in request_id:
-            edge_location = request_id.split('.')[0].upper()
-    except:
-        pass
+    edge_location = get_edge_location(event)
     
     # Read from DynamoDB
     item, ddb_region = read_ddb_item(event)
