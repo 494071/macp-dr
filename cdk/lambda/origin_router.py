@@ -5,7 +5,8 @@ This function runs on CloudFront origin-request events and routes traffic
 to the active region based on a DynamoDB control signal.
 
 Supports:
-- S3 buckets for static content (admin, agent, chat subdomains)
+- Server-side redirects to Amazon Connect Admin (admin subdomain)
+- S3 buckets for static content (agent, chat subdomains)
 - API Gateway for APIs (chat-api subdomain)
 
 Features:
@@ -46,6 +47,12 @@ S3_ORIGINS = {
         'domainName': 'macp-dr-opt7-content-prod-us-west-2.s3.us-west-2.amazonaws.com',
         'region': 'us-west-2'
     }
+}
+
+# Amazon Connect Admin URLs for server-side redirects
+CONNECT_ADMIN_URLS = {
+    'us-east-1': 'https://macp-dos-prod-connect-1.my.connect.aws',
+    'us-west-2': 'https://macp-dos-prod-dr-connect-1.my.connect.aws'
 }
 
 # API Gateway Origins for APIs
@@ -216,6 +223,20 @@ def sign_s3_request(request, bucket, region, uri):
     return request
 
 
+def generate_redirect_response(url):
+    """
+    Generate a 302 redirect response.
+    """
+    return {
+        'status': '302',
+        'statusDescription': 'Found',
+        'headers': {
+            'location': [{'key': 'Location', 'value': url}],
+            'cache-control': [{'key': 'Cache-Control', 'value': 'no-cache, no-store, must-revalidate'}]
+        }
+    }
+
+
 def route_to_api_gateway(request, api_origin, uri):
     """
     Route request to API Gateway origin.
@@ -250,7 +271,8 @@ def handler(event, context):
     Lambda@Edge origin-request handler.
     
     Routes traffic based on subdomain:
-    - admin, agent, chat → S3 bucket (static content)
+    - admin → 302 redirect to Amazon Connect Admin
+    - agent, chat → S3 bucket (static content)
     - chat-api → API Gateway (APIs)
     """
     request = event['Records'][0]['cf']['request']
@@ -272,14 +294,19 @@ def handler(event, context):
     active_region = get_active_region(event)
     
     # Route based on subdomain type
-    if subdomain == 'chat-api':
+    if subdomain == 'admin':
+        # Server-side redirect to Amazon Connect Admin
+        connect_url = CONNECT_ADMIN_URLS.get(active_region, CONNECT_ADMIN_URLS['us-east-1'])
+        logger.info(f"Admin redirect to {active_region}: {connect_url}")
+        return generate_redirect_response(connect_url)
+    elif subdomain == 'chat-api':
         # API Gateway routing
         api_origin = API_ORIGINS.get(active_region, API_ORIGINS['us-east-1'])
         request = route_to_api_gateway(request, api_origin, request['uri'])
         logger.info(f"API routing to {active_region}: {request['uri']}")
     else:
-        # S3 static content routing
-        folder_map = {'admin': '/admin', 'agent': '/agent', 'chat': '/chat'}
+        # S3 static content routing (agent, chat, etc.)
+        folder_map = {'agent': '/agent', 'chat': '/chat'}
         folder_prefix = folder_map.get(subdomain, '')
         
         # Rewrite URI to include folder prefix
