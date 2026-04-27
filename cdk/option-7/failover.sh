@@ -29,7 +29,14 @@ usage() {
 }
 
 get_status() {
+    # Try us-east-1 first, fallback to us-west-2
     aws dynamodb get-item \
+        --table-name "$TABLE_NAME" \
+        --key '{"config_key":{"S":"active_region"}}' \
+        --query 'Item.active_region.S' \
+        --output text 2>/dev/null || \
+    aws dynamodb get-item \
+        --region us-west-2 \
         --table-name "$TABLE_NAME" \
         --key '{"config_key":{"S":"active_region"}}' \
         --query 'Item.active_region.S' \
@@ -55,7 +62,18 @@ failover() {
     local user=$(whoami)
     
     echo -e "${YELLOW}Current state:${NC}"
-    local current=$(get_status)
+    # Try us-east-1 first, fallback to us-west-2 for status check
+    local current=$(aws dynamodb get-item \
+        --table-name "$TABLE_NAME" \
+        --key '{"config_key":{"S":"active_region"}}' \
+        --query 'Item.active_region.S' \
+        --output text 2>/dev/null || \
+        aws dynamodb get-item \
+        --region us-west-2 \
+        --table-name "$TABLE_NAME" \
+        --key '{"config_key":{"S":"active_region"}}' \
+        --query 'Item.active_region.S' \
+        --output text)
     echo "  Active region: $current"
     echo ""
     
@@ -66,12 +84,13 @@ failover() {
     
     echo -e "${YELLOW}Switching to $target_region...${NC}"
     
-    # Update DynamoDB
+    # Write to us-west-2 replica (works even if us-east-1 is down)
     aws dynamodb put-item \
+        --region us-west-2 \
         --table-name "$TABLE_NAME" \
         --item "{\"config_key\":{\"S\":\"active_region\"},\"active_region\":{\"S\":\"$target_region\"},\"updated_at\":{\"S\":\"$timestamp\"},\"updated_by\":{\"S\":\"$user\"}}"
     
-    echo -e "${GREEN}✓ DynamoDB updated${NC}"
+    echo -e "${GREEN}✓ DynamoDB updated (us-west-2 replica)${NC}"
     
     # Invalidate CloudFront cache
     echo -e "${YELLOW}Invalidating CloudFront cache...${NC}"
@@ -83,11 +102,16 @@ failover() {
     
     echo -e "${GREEN}✓ Cache invalidation started: $invalidation_id${NC}"
     
-    # Verify
+    # Verify (read from us-west-2 to confirm write)
     echo ""
     echo -e "${YELLOW}Verifying...${NC}"
     sleep 2
-    local new_state=$(get_status)
+    local new_state=$(aws dynamodb get-item \
+        --region us-west-2 \
+        --table-name "$TABLE_NAME" \
+        --key '{"config_key":{"S":"active_region"}}' \
+        --query 'Item.active_region.S' \
+        --output text)
     echo "  Active region: $new_state"
     
     if [ "$new_state" == "$target_region" ]; then

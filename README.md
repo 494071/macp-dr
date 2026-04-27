@@ -1,8 +1,10 @@
-# Option 7: Lambda@Edge with DynamoDB Global Table Control Signal
+# MACP Connect DR Infrastructure
 
 ## Overview
 
-This directory contains CloudFormation templates for implementing Option 7 DR architecture:
+This project implements a Disaster Recovery solution for MACP Connect using Lambda@Edge with DynamoDB Global Table control signals.
+
+**Key Features:**
 - **Single CloudFront distribution** with multiple subdomain aliases
 - **Origin Group** for automatic failover (safety net)
 - **Lambda@Edge** for proactive routing based on DynamoDB control signal
@@ -111,3 +113,20 @@ aws dynamodb get-item \
 | Lambda@Edge | ~$1-5 |
 | Route 53 | ~$1 |
 | **Total** | **~$15-30/month** |
+
+## Project Structure
+
+```
+├── 01-dynamodb-global-table.yaml   # DynamoDB Global Table for failover state
+├── 02-s3-buckets.yaml              # S3 buckets with cross-region replication
+├── 03-lambda-edge.yaml             # Lambda@Edge routing function
+├── 04-cloudfront-distribution.yaml # CloudFront with origin groups
+├── lambda/                         # Lambda function source code
+├── dr-dashboard.html               # DR operations dashboard
+├── cdk/                            # AWS CDK implementation (alternative)
+└── research/                       # Previous architecture options and docs
+```
+
+## Research & Alternative Approaches
+
+The `research/` directory contains documentation and templates from earlier architecture explorations, including dual-CloudFront approaches and Route 53 failover patterns.

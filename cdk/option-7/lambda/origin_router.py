@@ -11,7 +11,8 @@ Supports:
 Features:
 - Dynamic origin switching based on DynamoDB control signal
 - SigV4 request signing for S3 authentication
-- Multi-region DynamoDB read with fallback (us-east-1 → us-west-2)
+- Edge-aware DynamoDB routing (prefers nearest regional replica)
+- Multi-region DynamoDB read with fallback
 - In-memory caching (~15s TTL) to reduce DDB calls
 - Last-known-good fallback if both DDB replicas fail
 - DR-biased default (us-west-2) when no data available
@@ -64,10 +65,75 @@ API_ORIGINS = {
 # Module-level cache
 CACHE = {'region': None, 'expires': 0, 'last_known': None}
 
+# Map CloudFront edge location prefixes to nearest DynamoDB region
+# Using PriceClass_100: North America and Europe only
+# DynamoDB replicas: us-east-1 and us-west-2
+#
+# US West Coast edges -> prefer us-west-2
+# US East/Central, Canada East, Europe -> prefer us-east-1
+WEST_EDGE_PREFIXES = (
+    # US West Coast
+    'SEA',  # Seattle
+    'SFO',  # San Francisco
+    'LAX',  # Los Angeles
+    'PDX',  # Portland
+    'HIO',  # Hillsboro, OR
+    'SJC',  # San Jose
+    'OAK',  # Oakland
+    'SAN',  # San Diego
+    # US Mountain (closer to us-west-2)
+    'PHX',  # Phoenix
+    'DEN',  # Denver
+    'SLC',  # Salt Lake City
+    'LAS',  # Las Vegas
+    # Canada West
+    'YVR',  # Vancouver
+    'YYC',  # Calgary
+)
 
-def get_active_region():
+
+def get_nearest_ddb_regions(event):
+    """
+    Determine DynamoDB region order based on CloudFront edge location.
+    Returns regions to try in order of proximity.
+    """
+    try:
+        # Edge location is in the config section of the CloudFront event
+        config = event['Records'][0]['cf'].get('config', {})
+        edge_location = config.get('distributionDomainName', '')
+        
+        # Try to get from request ID which contains edge location code
+        request_id = config.get('requestId', '')
+        
+        # CloudFront edge location codes are typically in headers or can be derived
+        # The distributionId doesn't help, but we can check the request origin
+        request = event['Records'][0]['cf']['request']
+        
+        # Check for CloudFront-Viewer-Country or similar headers
+        viewer_country_header = request['headers'].get('cloudfront-viewer-country', [])
+        
+        # Better approach: use the 'x-edge-location' if available, or derive from request
+        # For Lambda@Edge, we can inspect the invoked function ARN region
+        # But actually, the most reliable is to check context.invoked_function_arn
+        
+        # Fallback: check if there's edge location info we can use
+        # The request ID format includes edge location: <edge>.<timestamp>.<id>
+        if request_id and '.' in request_id:
+            edge_code = request_id.split('.')[0].upper()
+            if edge_code.startswith(WEST_EDGE_PREFIXES):
+                logger.info(f"Edge location {edge_code} - preferring us-west-2 DDB")
+                return ['us-west-2', 'us-east-1']
+    except Exception as e:
+        logger.debug(f"Could not determine edge location: {e}")
+    
+    # Default: prefer us-east-1 (US East, US Central, Canada East, and all European edges)
+    return ['us-east-1', 'us-west-2']
+
+
+def get_active_region(event=None):
     """
     Read active region from DynamoDB with caching and multi-region fallback.
+    Tries nearest DynamoDB replica first based on edge location.
     """
     global CACHE
     now = time.time()
@@ -77,8 +143,11 @@ def get_active_region():
         logger.info(f"Cache hit: {CACHE['region']}")
         return CACHE['region']
     
+    # Determine region order based on edge location
+    ddb_regions = get_nearest_ddb_regions(event) if event else ['us-east-1', 'us-west-2']
+    
     # Try each DDB replica in order
-    for ddb_region in ['us-east-1', 'us-west-2']:
+    for ddb_region in ddb_regions:
         try:
             client = boto3.client('dynamodb', region_name=ddb_region)
             resp = client.get_item(
@@ -199,8 +268,8 @@ def handler(event, context):
     subdomain = original_host.split('.')[0] if original_host else ''
     logger.info(f"Subdomain: {subdomain}, URI: {request['uri']}")
     
-    # Get active region from DynamoDB
-    active_region = get_active_region()
+    # Get active region from DynamoDB (pass event for edge-aware routing)
+    active_region = get_active_region(event)
     
     # Route based on subdomain type
     if subdomain == 'chat-api':

@@ -58,6 +58,9 @@ export class ChatApiStack extends cdk.Stack {
       },
     });
 
+    // WAF tag for Firewall Manager compliance (same as CloudFront distributions)
+    cdk.Tags.of(this.api).add('mms:waf-rules', 'usonlyfortinet');
+
     // Lambda integration
     const chatIntegration = new apigateway.LambdaIntegration(this.chatFunction, {
       requestTemplates: { 'application/json': '{ "statusCode": "200" }' },
