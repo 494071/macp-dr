@@ -43,19 +43,19 @@ export class DrBucketStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DrBucketName', {
       value: this.drBucket.bucketName,
       description: 'DR S3 Bucket Name',
-      exportName: `Option7-DrBucketName-${environment}`,
+      exportName: `MacpDr-DrBucketName-${environment}`,
     });
 
     new cdk.CfnOutput(this, 'DrBucketArn', {
       value: this.drBucket.bucketArn,
       description: 'DR S3 Bucket ARN',
-      exportName: `Option7-DrBucketArn-${environment}`,
+      exportName: `MacpDr-DrBucketArn-${environment}`,
     });
 
     new cdk.CfnOutput(this, 'DrBucketDomainName', {
       value: this.drBucket.bucketRegionalDomainName,
       description: 'DR S3 Bucket Regional Domain Name',
-      exportName: `Option7-DrBucketDomain-${environment}`,
+      exportName: `MacpDr-DrBucketDomain-${environment}`,
     });
   }
 }

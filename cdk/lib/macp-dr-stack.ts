@@ -11,7 +11,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
-export interface Option7StackProps extends cdk.StackProps {
+export interface MacpDrStackProps extends cdk.StackProps {
   environment: string;
   certificateArn: string;
   webAclArn: string;
@@ -22,12 +22,12 @@ export interface Option7StackProps extends cdk.StackProps {
   hostedZoneName: string;
 }
 
-export class Option7Stack extends cdk.Stack {
+export class MacpDrStack extends cdk.Stack {
   public readonly distribution: cloudfront.Distribution;
   public readonly primaryBucket: s3.Bucket;
   public readonly failoverTable: dynamodb.TableV2;
 
-  constructor(scope: Construct, id: string, props: Option7StackProps) {
+  constructor(scope: Construct, id: string, props: MacpDrStackProps) {
     super(scope, id, props);
 
     const { environment, certificateArn, webAclArn, subdomains, loggingBucket, s3LoggingBucket, hostedZoneId, hostedZoneName } = props;
@@ -196,7 +196,7 @@ function handler(event) {
     // Distribution
     // Note: defaultRootObject removed - Lambda@Edge handles index.html for subdomain routing
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
-      comment: `Option 7 DR Distribution - ${environment}`,
+      comment: `MACP DR Distribution - ${environment}`,
       domainNames: subdomains,
       certificate: certificate,
       defaultBehavior: defaultBehavior,
@@ -205,7 +205,7 @@ function handler(event) {
       webAclId: webAclArn,
       enableLogging: true,
       logBucket: s3.Bucket.fromBucketName(this, 'LogBucket', loggingBucket),
-      logFilePrefix: `macp-dr-opt7/cloudfront/`,
+      logFilePrefix: `macp-dr/cloudfront/`,
       geoRestriction: cloudfront.GeoRestriction.allowlist('US'),
       errorResponses: [
         { httpStatus: 403, ttl: cdk.Duration.seconds(0) },
@@ -236,7 +236,7 @@ function handler(event) {
         zone: hostedZone,
         recordName: recordName,
         target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(this.distribution)),
-        comment: `Option 7 DR - ${subdomain}`,
+        comment: `MACP DR - ${subdomain}`,
       });
     }
 

@@ -1,5 +1,5 @@
 {
-  "app": "npx ts-node --prefer-ts-exts bin/option-7.ts",
+  "app": "npx ts-node --prefer-ts-exts bin/macp-dr.ts",
   "watch": {
     "include": [
       "**"

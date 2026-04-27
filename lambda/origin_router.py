@@ -1,5 +1,5 @@
 """
-Lambda@Edge Origin Router for Option 7 DR Architecture
+Lambda@Edge Origin Router for MACP DR Architecture
 
 This function runs on CloudFront origin-request events and routes traffic
 to the active region's S3 bucket based on a DynamoDB control signal.

@@ -1,6 +1,6 @@
-# Option 7 CDK - Lambda@Edge with DynamoDB Global Table
+# MACP DR CDK - Lambda@Edge with DynamoDB Global Table
 
-AWS CDK implementation of Option 7 DR architecture for MACP Connect.
+AWS CDK implementation of the MACP Connect DR architecture.
 
 ## Architecture
 
@@ -42,16 +42,16 @@ AWS CDK implementation of Option 7 DR architecture for MACP Connect.
 
 | Stack | Region | Description |
 |-------|--------|-------------|
-| `Option7DrBucketStack` | us-west-2 | DR S3 bucket (deploy first) |
-| `Option7Stack` | us-east-1 | Main stack: DynamoDB, Lambda@Edge, CloudFront, Primary S3, Route53 |
+| `MacpDrBucketStack` | us-west-2 | DR S3 bucket (deploy first) |
+| `MacpDrStack` | us-east-1 | Main stack: DynamoDB, Lambda@Edge, CloudFront, Primary S3, Route53 |
 
 ## Resources Created
 
 - **DynamoDB Global Table** - `macp-dr-prod-failover-state` (replicated to us-west-2)
-- **S3 Buckets** - `macp-dr-opt7-content-prod-us-east-1` and `macp-dr-opt7-content-prod-us-west-2`
+- **S3 Buckets** - Primary (us-east-1) and DR (us-west-2)
 - **Lambda@Edge** - `macp-dr-prod-origin-router` (Python 3.12)
 - **CloudFront Function** - `macp-dr-prod-host-passthrough`
-- **CloudFront Distribution** - Single distribution with 3 subdomain aliases
+- **CloudFront Distribution** - Single distribution with subdomain aliases
 - **Route53 A Records** - For admin, agent, chat subdomains
 
 ## Prerequisites
@@ -74,10 +74,10 @@ npx cdk bootstrap aws://ACCOUNT_ID/us-east-1
 npx cdk bootstrap aws://ACCOUNT_ID/us-west-2
 
 # Deploy DR bucket first (us-west-2)
-npx cdk deploy Option7DrBucketStack
+npx cdk deploy MacpDrBucketStack
 
 # Deploy main stack (us-east-1)
-npx cdk deploy Option7Stack
+npx cdk deploy MacpDrStack
 
 # Seed DynamoDB with initial state
 aws dynamodb put-item --table-name macp-dr-prod-failover-state \

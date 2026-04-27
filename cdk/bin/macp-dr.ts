@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { Option7Stack } from '../lib/option-7-stack';
+import { MacpDrStack } from '../lib/macp-dr-stack';
 import { DrBucketStack } from '../lib/dr-bucket-stack';
 import { ChatApiStack } from '../lib/chat-api-stack';
 
@@ -47,15 +47,15 @@ const config = {
 };
 
 // DR Bucket Stack (deploy to us-west-2 first)
-const drBucketStack = new DrBucketStack(app, 'Option7DrBucketStack', {
+const drBucketStack = new DrBucketStack(app, 'MacpDrBucketStack', {
   env: { account: accountId, region: 'us-west-2' },
   environment,
   s3LoggingBucket: config.s3LoggingBucketWest,
   crossRegionReferences: true,
 });
 
-// Main Option 7 Stack (deploy to us-east-1)
-const mainStack = new Option7Stack(app, 'Option7Stack', {
+// Main DR Stack (deploy to us-east-1)
+const mainStack = new MacpDrStack(app, 'MacpDrStack', {
   env: { account: accountId, region: 'us-east-1' },
   ...config,
   s3LoggingBucket: config.s3LoggingBucketEast,
