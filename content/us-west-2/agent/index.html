@@ -2,10 +2,71 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="0;url=https://macp-dos-prod-dr-connect-1.my.connect.aws/agent-app-v2/">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MACP Connect Agent Workspace</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f8fafc;
+      color: #475569;
+    }
+    .loader {
+      text-align: center;
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #e2e8f0;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error {
+      color: #dc2626;
+      margin-top: 1rem;
+    }
+  </style>
 </head>
 <body>
-  <p>Redirecting to <a href="https://macp-dos-prod-dr-connect-1.my.connect.aws/agent-app-v2/">Agent Workspace</a>...</p>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>Redirecting to Agent Workspace...</p>
+    <p id="error" class="error" style="display: none;"></p>
+  </div>
+
+  <script>
+    const HEALTH_URL = 'https://health.prod.gsa.dos.macp.cloud/';
+    const AGENT_URLS = {
+      'us-east-1': 'https://macp-dos-prod-connect-1.my.connect.aws/agent-app-v2/',
+      'us-west-2': 'https://macp-dos-prod-dr-connect-1.my.connect.aws/agent-app-v2/'
+    };
+
+    async function redirect() {
+      try {
+        const response = await fetch(HEALTH_URL);
+        const data = await response.json();
+        const region = data.active_region || 'us-east-1';
+        const url = AGENT_URLS[region] || AGENT_URLS['us-east-1'];
+        window.location.replace(url);
+      } catch (error) {
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('error').textContent = 'Error: ' + error.message + '. Redirecting to primary...';
+        setTimeout(() => {
+          window.location.replace(AGENT_URLS['us-east-1']);
+        }, 2000);
+      }
+    }
+
+    redirect();
+  </script>
 </body>
 </html>

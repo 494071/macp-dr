@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MACP Connect Portal</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+      color: white;
+      padding: 2rem;
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 2rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .header p {
+      opacity: 0.9;
+      font-size: 1rem;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #475569;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px;
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+    .status-badge.active {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .status-badge.error {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .status-badge.pending {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .meta-item {
+      background: #f8fafc;
+      padding: 0.75rem;
+      border-radius: 8px;
+    }
+    .meta-item label {
+      font-size: 0.75rem;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .meta-item span {
+      display: block;
+      font-weight: 500;
+      margin-top: 0.25rem;
+    }
+    .links-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+    }
+    .link-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1.5rem;
+      background: #f8fafc;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #1e293b;
+      transition: all 0.2s;
+      border: 2px solid transparent;
+    }
+    .link-card:hover {
+      border-color: #3b82f6;
+      background: #eff6ff;
+    }
+    .link-card .icon {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+    .link-card .label {
+      font-weight: 500;
+    }
+    .chat-placeholder {
+      border: 2px dashed #cbd5e1;
+      border-radius: 8px;
+      padding: 3rem;
+      text-align: center;
+      color: #94a3b8;
+    }
+    .chat-placeholder p {
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .loading {
+      color: #64748b;
+      font-style: italic;
+    }
+    .refresh-btn {
+      background: none;
+      border: 1px solid #cbd5e1;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #64748b;
+      transition: all 0.2s;
+    }
+    .refresh-btn:hover {
+      border-color: #3b82f6;
+      color: #3b82f6;
+    }
+    .header-actions {
+      margin-top: 1rem;
+    }
+    /* Failover controls */
+    .failover-controls {
+      margin-top: 1.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid #e2e8f0;
+    }
+    .failover-controls h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 1rem;
+    }
+    .region-selector {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .region-option {
+      flex: 1;
+      padding: 1rem;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .region-option:hover {
+      border-color: #3b82f6;
+    }
+    .region-option.selected {
+      border-color: #3b82f6;
+      background: #eff6ff;
+    }
+    .region-option.current {
+      border-color: #22c55e;
+      background: #f0fdf4;
+    }
+    .region-option .region-name {
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+    .region-option .region-label {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+    .reason-input {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    .reason-input:focus {
+      outline: none;
+      border-color: #3b82f6;
+    }
+    .btn-row {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .failover-btn {
+      flex: 1;
+      padding: 0.75rem 1.5rem;
+      background: #dc2626;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .failover-btn:hover:not(:disabled) {
+      background: #b91c1c;
+    }
+    .failover-btn:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    .invalidate-btn {
+      padding: 0.75rem 1.5rem;
+      background: #f59e0b;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .invalidate-btn:hover:not(:disabled) {
+      background: #d97706;
+    }
+    .invalidate-btn:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    .failover-status {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .failover-status.success {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .failover-status.error {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .failover-status.pending {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    /* Confirmation modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal {
+      background: white;
+      border-radius: 12px;
+      padding: 2rem;
+      max-width: 400px;
+      width: 90%;
+    }
+    .modal h3 {
+      font-size: 1.2rem;
+      margin-bottom: 1rem;
+      color: #dc2626;
+    }
+    .modal p {
+      margin-bottom: 1.5rem;
+      color: #64748b;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 1rem;
+    }
+    .modal-actions button {
+      flex: 1;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .modal-actions .cancel-btn {
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #64748b;
+    }
+    .modal-actions .confirm-btn {
+      background: #dc2626;
+      border: none;
+      color: white;
+    }
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>MACP Connect Portal</h1>
+    <p>Disaster Recovery Management Console</p>
+  </header>
+
+  <div class="container">
+    <!-- Health Status Card -->
+    <div class="card">
+      <h2>
+        <span>System Status</span>
+        <button class="refresh-btn" onclick="fetchHealth()">↻ Refresh</button>
+      </h2>
+      <div id="health-status">
+        <span class="loading">Loading health status...</span>
+      </div>
+
+      <!-- Failover Controls -->
+      <div class="failover-controls">
+        <h3>⚡ Region Failover</h3>
+        <div class="region-selector">
+          <div class="region-option" data-region="us-east-1" onclick="selectRegion('us-east-1')">
+            <div class="region-name">US-EAST-1</div>
+            <div class="region-label">Primary (N. Virginia)</div>
+          </div>
+          <div class="region-option" data-region="us-west-2" onclick="selectRegion('us-west-2')">
+            <div class="region-name">US-WEST-2</div>
+            <div class="region-label">DR (Oregon)</div>
+          </div>
+        </div>
+        <input type="text" class="reason-input" id="failover-reason" placeholder="Reason for failover (optional)">
+        <div class="btn-row">
+          <button class="failover-btn" id="failover-btn" onclick="showConfirmModal()" disabled>
+            Initiate Failover
+          </button>
+          <button class="invalidate-btn" id="invalidate-btn" onclick="invalidateCache()">
+            🔄 Invalidate Cache
+          </button>
+        </div>
+        <div id="failover-status" class="failover-status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Quick Links Card -->
+    <div class="card">
+      <h2>Quick Links</h2>
+      <div class="links-grid">
+        <a href="https://admin.prod.gsa.dos.macp.cloud/" target="_blank" rel="noopener" class="link-card">
+          <span class="icon">⚙️</span>
+          <span class="label">Admin Console</span>
+        </a>
+        <a href="https://agent.prod.gsa.dos.macp.cloud/" target="_blank" rel="noopener" class="link-card">
+          <span class="icon">🎧</span>
+          <span class="label">Agent Workspace</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- Chat Widget Placeholder -->
+    <div class="card">
+      <h2>Chat Widget</h2>
+      <div class="chat-placeholder">
+        <span style="font-size: 2rem;">💬</span>
+        <p>Chat widget will be embedded here</p>
+        <p style="font-size: 0.8rem; margin-top: 0.5rem;">TODO: Integrate Amazon Connect Chat</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div id="confirm-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>⚠️ Confirm Failover</h3>
+      <p id="confirm-message">Are you sure you want to switch the active region?</p>
+      <div class="modal-actions">
+        <button class="cancel-btn" onclick="hideConfirmModal()">Cancel</button>
+        <button class="confirm-btn" onclick="executeFailover()">Confirm Failover</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const HEALTH_URL = 'https://health.prod.gsa.dos.macp.cloud/';
+    const FAILOVER_URL = 'https://failover-api.prod.gsa.dos.macp.cloud/failover';
+    const INVALIDATE_URL = 'https://failover-api.prod.gsa.dos.macp.cloud/invalidate';
+    const API_KEY = 'GBftm8ZFM53p9yFcEegJx12krzirrTS22Afndp8p';
+
+    let currentRegion = null;
+    let selectedRegion = null;
+
+    async function fetchHealth() {
+      const container = document.getElementById('health-status');
+      container.innerHTML = '<span class="loading">Loading...</span>';
+
+      try {
+        const response = await fetch(HEALTH_URL);
+        const data = await response.json();
+
+        currentRegion = data.active_region;
+        const isActive = data.active_region && data.active_region !== 'unknown';
+        const badgeClass = isActive ? 'active' : 'error';
+        const regionDisplay = data.active_region || 'Unknown';
+
+        container.innerHTML = `
+          <div class="status-badge ${badgeClass}">
+            <span class="status-dot"></span>
+            Active Region: ${regionDisplay.toUpperCase()}
+          </div>
+          <div class="meta-grid">
+            <div class="meta-item">
+              <label>Last Updated</label>
+              <span>${data.updated_at || 'N/A'}</span>
+            </div>
+            <div class="meta-item">
+              <label>Updated By</label>
+              <span>${data.updated_by || 'N/A'}</span>
+            </div>
+            <div class="meta-item">
+              <label>Reason</label>
+              <span>${data.reason || 'N/A'}</span>
+            </div>
+            <div class="meta-item">
+              <label>Edge Location</label>
+              <span>${data.metadata?.edge_location || 'N/A'}</span>
+            </div>
+            <div class="meta-item">
+              <label>DDB Replica</label>
+              <span>${data.metadata?.ddb_replica_queried || 'N/A'}</span>
+            </div>
+            <div class="meta-item">
+              <label>Response Time</label>
+              <span>${data.metadata?.response_timestamp || 'N/A'}</span>
+            </div>
+          </div>
+        `;
+
+        // Update region selector to show current
+        updateRegionSelector();
+      } catch (error) {
+        container.innerHTML = `
+          <div class="status-badge error">
+            <span class="status-dot"></span>
+            Error fetching health status
+          </div>
+          <p style="margin-top: 1rem; color: #64748b; font-size: 0.9rem;">
+            ${error.message}
+          </p>
+        `;
+      }
+    }
+
+    function updateRegionSelector() {
+      document.querySelectorAll('.region-option').forEach(el => {
+        const region = el.dataset.region;
+        el.classList.remove('current', 'selected');
+        if (region === currentRegion) {
+          el.classList.add('current');
+        }
+        if (region === selectedRegion) {
+          el.classList.add('selected');
+        }
+      });
+
+      // Enable/disable failover button
+      const btn = document.getElementById('failover-btn');
+      if (selectedRegion && selectedRegion !== currentRegion && API_KEY) {
+        btn.disabled = false;
+        btn.textContent = `Failover to ${selectedRegion.toUpperCase()}`;
+      } else if (!API_KEY) {
+        btn.disabled = true;
+        btn.textContent = 'API Key Required';
+      } else {
+        btn.disabled = true;
+        btn.textContent = 'Select a different region';
+      }
+    }
+
+    function selectRegion(region) {
+      if (region === currentRegion) {
+        selectedRegion = null;
+      } else {
+        selectedRegion = region;
+      }
+      updateRegionSelector();
+    }
+
+    function showConfirmModal() {
+      if (!selectedRegion || selectedRegion === currentRegion) return;
+      
+      const message = `This will switch traffic from <strong>${currentRegion?.toUpperCase()}</strong> to <strong>${selectedRegion.toUpperCase()}</strong>. CloudFront cache will be invalidated (may take 30-60 seconds to propagate).`;
+      document.getElementById('confirm-message').innerHTML = message;
+      document.getElementById('confirm-modal').classList.remove('hidden');
+    }
+
+    function hideConfirmModal() {
+      document.getElementById('confirm-modal').classList.add('hidden');
+    }
+
+    async function executeFailover() {
+      hideConfirmModal();
+      
+      const statusEl = document.getElementById('failover-status');
+      const btn = document.getElementById('failover-btn');
+      const reason = document.getElementById('failover-reason').value;
+
+      statusEl.className = 'failover-status pending';
+      statusEl.textContent = 'Initiating failover...';
+      statusEl.classList.remove('hidden');
+      btn.disabled = true;
+
+      try {
+        const response = await fetch(FAILOVER_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': API_KEY
+          },
+          body: JSON.stringify({
+            region: selectedRegion,
+            reason: reason
+          })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.status === 'success') {
+          statusEl.className = 'failover-status success';
+          statusEl.innerHTML = `✓ ${data.message}<br><small>Invalidation ID: ${data.invalidation_id || 'N/A'}</small>`;
+          
+          // Clear selection and refresh health after delay
+          selectedRegion = null;
+          document.getElementById('failover-reason').value = '';
+          setTimeout(fetchHealth, 3000);
+        } else if (data.status === 'no_change') {
+          statusEl.className = 'failover-status pending';
+          statusEl.textContent = data.message;
+        } else {
+          throw new Error(data.error || 'Failover failed');
+        }
+      } catch (error) {
+        statusEl.className = 'failover-status error';
+        statusEl.textContent = `✗ Error: ${error.message}`;
+      }
+
+      updateRegionSelector();
+    }
+
+    async function invalidateCache() {
+      const statusEl = document.getElementById('failover-status');
+      const btn = document.getElementById('invalidate-btn');
+
+      statusEl.className = 'failover-status pending';
+      statusEl.textContent = 'Invalidating cache...';
+      statusEl.classList.remove('hidden');
+      btn.disabled = true;
+
+      try {
+        const response = await fetch(INVALIDATE_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': API_KEY
+          },
+          body: JSON.stringify({
+            paths: ['/*']
+          })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.status === 'success') {
+          statusEl.className = 'failover-status success';
+          statusEl.innerHTML = `✓ ${data.message}<br><small>Invalidation ID: ${data.invalidation_id}</small>`;
+        } else {
+          throw new Error(data.error || 'Invalidation failed');
+        }
+      } catch (error) {
+        statusEl.className = 'failover-status error';
+        statusEl.textContent = `✗ Error: ${error.message}`;
+      }
+
+      btn.disabled = false;
+    }
+
+    // Fetch on page load
+    fetchHealth();
+
+    // Auto-refresh every 30 seconds
+    setInterval(fetchHealth, 30000);
+  </script>
+</body>
+</html>

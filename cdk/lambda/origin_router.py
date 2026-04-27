@@ -19,19 +19,22 @@ Features:
 - DR-biased default (us-west-2) when no data available
 """
 
+import json
+import time
+import logging
+from datetime import datetime, timezone
+
 import boto3
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from botocore.credentials import Credentials
-import time
-import logging
-from datetime import datetime
-from urllib.parse import quote
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# =============================================================================
 # Configuration
+# =============================================================================
+
 TABLE_NAME = 'macp-dr-prod-failover-state'
 CACHE_TTL = 15  # seconds
 
@@ -69,35 +72,32 @@ API_ORIGINS = {
     }
 }
 
-# Module-level cache
-CACHE = {'region': None, 'expires': 0, 'last_known': None}
-
 # Map CloudFront edge location prefixes to nearest DynamoDB region
-# Using PriceClass_100: North America and Europe only
-# DynamoDB replicas: us-east-1 and us-west-2
-#
-# US West Coast edges -> prefer us-west-2
-# US East/Central, Canada East, Europe -> prefer us-east-1
 WEST_EDGE_PREFIXES = (
-    # US West Coast
-    'SEA',  # Seattle
-    'SFO',  # San Francisco
-    'LAX',  # Los Angeles
-    'PDX',  # Portland
-    'HIO',  # Hillsboro, OR
-    'SJC',  # San Jose
-    'OAK',  # Oakland
-    'SAN',  # San Diego
-    # US Mountain (closer to us-west-2)
-    'PHX',  # Phoenix
-    'DEN',  # Denver
-    'SLC',  # Salt Lake City
-    'LAS',  # Las Vegas
-    # Canada West
-    'YVR',  # Vancouver
-    'YYC',  # Calgary
+    'SEA', 'SFO', 'LAX', 'PDX', 'HIO', 'SJC', 'OAK', 'SAN',  # US West Coast
+    'PHX', 'DEN', 'SLC', 'LAS',  # US Mountain
+    'YVR', 'YYC',  # Canada West
 )
 
+# =============================================================================
+# Module-level caching (persists across Lambda invocations in same container)
+# =============================================================================
+
+# Region cache
+CACHE = {'region': None, 'expires': 0, 'last_known': None}
+
+# Pre-create DynamoDB clients for both regions (reduces cold start latency)
+DDB_CLIENTS = {
+    'us-east-1': boto3.client('dynamodb', region_name='us-east-1'),
+    'us-west-2': boto3.client('dynamodb', region_name='us-west-2'),
+}
+
+# Cache boto3 session for SigV4 signing
+BOTO_SESSION = boto3.Session()
+
+# =============================================================================
+# DynamoDB Functions
+# =============================================================================
 
 def get_nearest_ddb_regions(event):
     """
@@ -105,58 +105,36 @@ def get_nearest_ddb_regions(event):
     Returns regions to try in order of proximity.
     """
     try:
-        # Edge location is in the config section of the CloudFront event
         config = event['Records'][0]['cf'].get('config', {})
-        edge_location = config.get('distributionDomainName', '')
-        
-        # Try to get from request ID which contains edge location code
         request_id = config.get('requestId', '')
         
-        # CloudFront edge location codes are typically in headers or can be derived
-        # The distributionId doesn't help, but we can check the request origin
-        request = event['Records'][0]['cf']['request']
-        
-        # Check for CloudFront-Viewer-Country or similar headers
-        viewer_country_header = request['headers'].get('cloudfront-viewer-country', [])
-        
-        # Better approach: use the 'x-edge-location' if available, or derive from request
-        # For Lambda@Edge, we can inspect the invoked function ARN region
-        # But actually, the most reliable is to check context.invoked_function_arn
-        
-        # Fallback: check if there's edge location info we can use
-        # The request ID format includes edge location: <edge>.<timestamp>.<id>
         if request_id and '.' in request_id:
             edge_code = request_id.split('.')[0].upper()
             if edge_code.startswith(WEST_EDGE_PREFIXES):
-                logger.info(f"Edge location {edge_code} - preferring us-west-2 DDB")
+                logger.debug(f"Edge {edge_code} -> prefer us-west-2 DDB")
                 return ['us-west-2', 'us-east-1']
     except Exception as e:
         logger.debug(f"Could not determine edge location: {e}")
     
-    # Default: prefer us-east-1 (US East, US Central, Canada East, and all European edges)
     return ['us-east-1', 'us-west-2']
 
 
-def get_active_region(event=None):
+def read_ddb_item(event=None):
     """
-    Read active region from DynamoDB with caching and multi-region fallback.
-    Tries nearest DynamoDB replica first based on edge location.
+    Read the failover state item from DynamoDB with multi-region fallback.
+    Returns the full DynamoDB item dict, or None if all reads fail.
+    
+    This is the single source of truth for DynamoDB reads - consolidates
+    logic previously duplicated in get_active_region and get_health_data.
     """
-    global CACHE
-    now = time.time()
-    
-    # Return cached value if fresh
-    if now < CACHE['expires'] and CACHE['region']:
-        logger.info(f"Cache hit: {CACHE['region']}")
-        return CACHE['region']
-    
-    # Determine region order based on edge location
     ddb_regions = get_nearest_ddb_regions(event) if event else ['us-east-1', 'us-west-2']
     
-    # Try each DDB replica in order
     for ddb_region in ddb_regions:
         try:
-            client = boto3.client('dynamodb', region_name=ddb_region)
+            client = DDB_CLIENTS.get(ddb_region)
+            if not client:
+                client = boto3.client('dynamodb', region_name=ddb_region)
+            
             resp = client.get_item(
                 TableName=TABLE_NAME,
                 Key={'config_key': {'S': 'active_region'}},
@@ -164,19 +142,41 @@ def get_active_region(event=None):
             )
             
             if 'Item' in resp:
-                region = resp['Item']['active_region']['S']
-                CACHE = {
-                    'region': region,
-                    'expires': now + CACHE_TTL,
-                    'last_known': region
-                }
-                logger.info(f"DDB read from {ddb_region}: {region}")
-                return region
+                logger.debug(f"DDB read from {ddb_region}: success")
+                return resp['Item'], ddb_region
             else:
                 logger.warning(f"No item found in DDB {ddb_region}")
         except Exception as e:
             logger.warning(f"DDB read failed for {ddb_region}: {e}")
             continue
+    
+    return None, None
+
+
+def get_active_region(event=None):
+    """
+    Read active region from DynamoDB with caching and multi-region fallback.
+    """
+    global CACHE
+    now = time.time()
+    
+    # Return cached value if fresh
+    if now < CACHE['expires'] and CACHE['region']:
+        logger.debug(f"Cache hit: {CACHE['region']}")
+        return CACHE['region']
+    
+    # Read from DynamoDB
+    item, ddb_region = read_ddb_item(event)
+    
+    if item:
+        region = item.get('active_region', {}).get('S', 'us-east-1')
+        CACHE = {
+            'region': region,
+            'expires': now + CACHE_TTL,
+            'last_known': region
+        }
+        logger.info(f"DDB read from {ddb_region}: {region}")
+        return region
     
     # Fallback: last-known-good or default to DR
     fallback = CACHE.get('last_known') or 'us-west-2'
@@ -184,13 +184,102 @@ def get_active_region(event=None):
     return fallback
 
 
+def get_health_data(event):
+    """
+    Get full health data from DynamoDB for the health endpoint.
+    Returns all row data plus metadata about the request.
+    """
+    # Extract edge location from request
+    edge_location = 'unknown'
+    try:
+        config = event['Records'][0]['cf'].get('config', {})
+        request_id = config.get('requestId', '')
+        if request_id and '.' in request_id:
+            edge_location = request_id.split('.')[0].upper()
+    except:
+        pass
+    
+    # Read from DynamoDB
+    item, ddb_region = read_ddb_item(event)
+    
+    if item:
+        return {
+            'active_region': item.get('active_region', {}).get('S', 'unknown'),
+            'updated_at': item.get('updated_at', {}).get('S', ''),
+            'updated_by': item.get('updated_by', {}).get('S', ''),
+            'reason': item.get('reason', {}).get('S', ''),
+            'metadata': {
+                'edge_location': edge_location,
+                'ddb_replica_queried': ddb_region,
+                'response_timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            }
+        }
+    
+    # Fallback response
+    return {
+        'active_region': 'unknown',
+        'error': 'Failed to read from DynamoDB',
+        'metadata': {
+            'edge_location': edge_location,
+            'ddb_replica_queried': None,
+            'response_timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        }
+    }
+
+# =============================================================================
+# Response Generators
+# =============================================================================
+
+def generate_redirect_response(url, cache_seconds=300):
+    """Generate a 302 redirect response with caching."""
+    return {
+        'status': '302',
+        'statusDescription': 'Found',
+        'headers': {
+            'location': [{'key': 'Location', 'value': url}],
+            'cache-control': [{'key': 'Cache-Control', 'value': f'public, max-age={cache_seconds}'}]
+        }
+    }
+
+
+def generate_json_response(data, cache_seconds=5):
+    """Generate a JSON response with CORS headers."""
+    body = json.dumps(data, indent=2)
+    return {
+        'status': '200',
+        'statusDescription': 'OK',
+        'headers': {
+            'content-type': [{'key': 'Content-Type', 'value': 'application/json'}],
+            'cache-control': [{'key': 'Cache-Control', 'value': f'public, max-age={cache_seconds}'}],
+            'access-control-allow-origin': [{'key': 'Access-Control-Allow-Origin', 'value': '*'}],
+            'access-control-allow-methods': [{'key': 'Access-Control-Allow-Methods', 'value': 'GET, HEAD, OPTIONS'}]
+        },
+        'body': body
+    }
+
+
+def generate_error_response(message, status_code=500):
+    """Generate an error response."""
+    return {
+        'status': str(status_code),
+        'statusDescription': 'Error',
+        'headers': {
+            'content-type': [{'key': 'Content-Type', 'value': 'application/json'}],
+            'cache-control': [{'key': 'Cache-Control', 'value': 'no-cache'}]
+        },
+        'body': json.dumps({'error': message})
+    }
+
+# =============================================================================
+# Origin Routing Functions
+# =============================================================================
+
 def sign_s3_request(request, bucket, region, uri):
     """
     Sign the request with SigV4 for S3 authentication.
-    Uses the actual HTTP method from the request (GET, HEAD, OPTIONS).
+    Uses cached session for better performance.
     """
-    session = boto3.Session()
-    credentials = session.get_credentials().get_frozen_credentials()
+    credentials = BOTO_SESSION.get_credentials().get_frozen_credentials()
     
     host = f"{bucket}.s3.{region}.amazonaws.com"
     url = f"https://{host}{uri}"
@@ -221,33 +310,15 @@ def sign_s3_request(request, bucket, region, uri):
         if header_lower in ['authorization', 'x-amz-date', 'x-amz-security-token', 'x-amz-content-sha256']:
             request['headers'][header_lower] = [{'key': header_name, 'value': header_value}]
     
-    logger.info(f"Signed S3 request for s3://{bucket}{uri} in {region}")
+    logger.debug(f"Signed S3 request for s3://{bucket}{uri}")
     return request
 
 
-def generate_redirect_response(url, cache_seconds=300):
-    """
-    Generate a 302 redirect response with caching.
-    """
-    return {
-        'status': '302',
-        'statusDescription': 'Found',
-        'headers': {
-            'location': [{'key': 'Location', 'value': url}],
-            'cache-control': [{'key': 'Cache-Control', 'value': f'public, max-age={cache_seconds}'}]
-        }
-    }
-
-
 def route_to_api_gateway(request, api_origin, uri):
-    """
-    Route request to API Gateway origin.
-    API Gateway handles its own authentication, no signing needed.
-    """
+    """Route request to API Gateway origin."""
     host = api_origin['domainName']
     path = api_origin['path']
     
-    # Set the origin to API Gateway
     request['origin'] = {
         'custom': {
             'domainName': host,
@@ -261,12 +332,14 @@ def route_to_api_gateway(request, api_origin, uri):
         }
     }
     
-    # Update Host header for API Gateway
     request['headers']['host'] = [{'key': 'Host', 'value': host}]
     
-    logger.info(f"Routing to API Gateway: {host}{path}{uri}")
+    logger.debug(f"Routing to API Gateway: {host}{path}{uri}")
     return request
 
+# =============================================================================
+# Main Handler
+# =============================================================================
 
 def handler(event, context):
     """
@@ -274,76 +347,92 @@ def handler(event, context):
     
     Routes traffic based on subdomain:
     - admin → 302 redirect to Amazon Connect Admin
-    - agent, chat → S3 bucket (static content)
+    - health → JSON response with active region and metadata
+    - agent, chat, portal → S3 bucket (static content)
     - chat-api → API Gateway (APIs)
     """
-    request = event['Records'][0]['cf']['request']
-    
-    # Extract subdomain from x-original-host header
-    original_host_header = request['headers'].get('x-original-host', [])
-    if original_host_header:
-        if isinstance(original_host_header, list):
-            original_host = original_host_header[0].get('value', '')
+    try:
+        request = event['Records'][0]['cf']['request']
+        
+        # Extract subdomain from x-original-host header
+        original_host_header = request['headers'].get('x-original-host', [])
+        if original_host_header:
+            if isinstance(original_host_header, list):
+                original_host = original_host_header[0].get('value', '')
+            else:
+                original_host = original_host_header.get('value', '')
         else:
-            original_host = original_host_header.get('value', '')
-    else:
-        original_host = ''
-    
-    subdomain = original_host.split('.')[0] if original_host else ''
-    logger.info(f"Subdomain: {subdomain}, URI: {request['uri']}")
-    
-    # Get active region from DynamoDB (pass event for edge-aware routing)
-    active_region = get_active_region(event)
-    
-    # Route based on subdomain type
-    if subdomain == 'admin':
-        # Server-side redirect to Amazon Connect Admin
-        connect_url = CONNECT_ADMIN_URLS.get(active_region, CONNECT_ADMIN_URLS['us-east-1'])
-        logger.info(f"Admin redirect to {active_region}: {connect_url}")
-        return generate_redirect_response(connect_url)
-    elif subdomain == 'chat-api':
-        # API Gateway routing
-        api_origin = API_ORIGINS.get(active_region, API_ORIGINS['us-east-1'])
-        request = route_to_api_gateway(request, api_origin, request['uri'])
-        logger.info(f"API routing to {active_region}: {request['uri']}")
-    else:
-        # S3 static content routing (agent, chat, etc.)
-        folder_map = {'agent': '/agent', 'chat': '/chat'}
-        folder_prefix = folder_map.get(subdomain, '')
+            original_host = ''
         
-        # Rewrite URI to include folder prefix
-        original_uri = request['uri']
-        if folder_prefix and not original_uri.startswith(folder_prefix):
-            request['uri'] = folder_prefix + original_uri
-            logger.info(f"URI rewrite: {original_uri} → {request['uri']}")
+        subdomain = original_host.split('.')[0] if original_host else ''
+        logger.info(f"Subdomain: {subdomain}, URI: {request['uri']}")
         
-        # Append index.html for directory requests
-        if request['uri'].endswith('/'):
-            request['uri'] += 'index.html'
-            logger.info(f"Added index.html: {request['uri']}")
+        # Route based on subdomain type
+        if subdomain == 'admin':
+            active_region = get_active_region(event)
+            connect_url = CONNECT_ADMIN_URLS.get(active_region, CONNECT_ADMIN_URLS['us-east-1'])
+            logger.info(f"Admin redirect to {active_region}: {connect_url}")
+            return generate_redirect_response(connect_url, cache_seconds=60)
         
-        # Sign request and route to S3
-        s3_origin = S3_ORIGINS.get(active_region, S3_ORIGINS['us-east-1'])
-        request = sign_s3_request(
-            request,
-            s3_origin['bucket'],
-            s3_origin['region'],
-            request['uri']
-        )
-        logger.info(f"S3 routing to {active_region}: {request['uri']}")
+        elif subdomain == 'health':
+            health_data = get_health_data(event)
+            logger.info(f"Health check: active_region={health_data.get('active_region')}")
+            return generate_json_response(health_data)
+        
+        elif subdomain == 'chat-api':
+            active_region = get_active_region(event)
+            api_origin = API_ORIGINS.get(active_region, API_ORIGINS['us-east-1'])
+            request = route_to_api_gateway(request, api_origin, request['uri'])
+            logger.info(f"API routing to {active_region}: {request['uri']}")
+        
+        else:
+            # S3 static content routing (agent, chat, portal, etc.)
+            active_region = get_active_region(event)
+            folder_map = {'agent': '/agent', 'chat': '/chat', 'portal': '/portal'}
+            folder_prefix = folder_map.get(subdomain, '')
+            
+            # Rewrite URI to include folder prefix
+            original_uri = request['uri']
+            if folder_prefix and not original_uri.startswith(folder_prefix):
+                request['uri'] = folder_prefix + original_uri
+                logger.debug(f"URI rewrite: {original_uri} → {request['uri']}")
+            
+            # Append index.html for directory requests
+            if request['uri'].endswith('/'):
+                request['uri'] += 'index.html'
+            
+            # Sign request and route to S3
+            s3_origin = S3_ORIGINS.get(active_region, S3_ORIGINS['us-east-1'])
+            request = sign_s3_request(
+                request,
+                s3_origin['bucket'],
+                s3_origin['region'],
+                request['uri']
+            )
+            logger.info(f"S3 routing to {active_region}: {request['uri']}")
+        
+        return request
     
-    return request
+    except Exception as e:
+        logger.error(f"Handler error: {e}", exc_info=True)
+        # Return error response for direct responses, or fallback for S3
+        return generate_error_response(f"Internal error: {str(e)}")
 
 
-# For local testing
+# =============================================================================
+# Local Testing
+# =============================================================================
+
 if __name__ == '__main__':
     test_event = {
         'Records': [{
             'cf': {
+                'config': {'requestId': 'TEST.123.abc'},
                 'request': {
                     'uri': '/',
+                    'method': 'GET',
                     'headers': {
-                        'x-original-host': [{'key': 'x-original-host', 'value': 'chat-api.prod.gsa.dos.macp.cloud'}]
+                        'x-original-host': [{'key': 'x-original-host', 'value': 'health.prod.gsa.dos.macp.cloud'}]
                     }
                 }
             }
@@ -351,4 +440,4 @@ if __name__ == '__main__':
     }
     
     result = handler(test_event, None)
-    print(f"Result: {result}")
+    print(json.dumps(result, indent=2))

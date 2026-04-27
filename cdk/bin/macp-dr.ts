@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { MacpDrStack } from '../lib/macp-dr-stack';
 import { DrBucketStack } from '../lib/dr-bucket-stack';
 import { ChatApiStack } from '../lib/chat-api-stack';
+import { FailoverApiStack } from '../lib/failover-api-stack';
 
 const app = new cdk.App();
 
@@ -38,12 +39,16 @@ const config = {
     'agent.prod.gsa.dos.macp.cloud',
     'chat.prod.gsa.dos.macp.cloud',
     'chat-api.prod.gsa.dos.macp.cloud',
+    'health.prod.gsa.dos.macp.cloud',
+    'portal.prod.gsa.dos.macp.cloud',
   ],
   loggingBucket: 'maximus-cloudfront-logs-417886991978-us-east-1',
   s3LoggingBucketEast: 'maximus-federal-s3-logs-417886991978-us-east-1',
   s3LoggingBucketWest: 'maximus-federal-s3-logs-417886991978-us-west-2',
   hostedZoneId: 'Z10445293PTGB9ZOBN0G8',
   hostedZoneName: 'prod.gsa.dos.macp.cloud',
+  distributionId: 'E1KLVY7Q1RG0RK',
+  failoverTableName: 'macp-dr-prod-failover-state',
 };
 
 // DR Bucket Stack (deploy to us-west-2 first)
@@ -83,8 +88,19 @@ const chatApiWest = new ChatApiStack(app, 'ChatApiStackWest', {
   customDomainPrefix: 'west-api',
 });
 
+// Failover API Stack (us-east-1 only - controls both regions)
+const failoverApi = new FailoverApiStack(app, 'FailoverApiStack', {
+  env: { account: accountId, region: 'us-east-1' },
+  environment,
+  certificateArn: config.certificateArn,
+  hostedZoneId: config.hostedZoneId,
+  hostedZoneName: config.hostedZoneName,
+  failoverTableName: config.failoverTableName,
+  distributionId: config.distributionId,
+});
+
 // Apply tags to all stacks
-const allStacks = [drBucketStack, mainStack, chatApiEast, chatApiWest];
+const allStacks = [drBucketStack, mainStack, chatApiEast, chatApiWest, failoverApi];
 for (const stack of allStacks) {
   for (const [key, value] of Object.entries(projectTags)) {
     cdk.Tags.of(stack).add(key, value);
