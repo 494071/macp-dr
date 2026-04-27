@@ -187,19 +187,21 @@ def get_active_region(event=None):
 def sign_s3_request(request, bucket, region, uri):
     """
     Sign the request with SigV4 for S3 authentication.
+    Uses the actual HTTP method from the request (GET, HEAD, OPTIONS).
     """
     session = boto3.Session()
     credentials = session.get_credentials().get_frozen_credentials()
     
     host = f"{bucket}.s3.{region}.amazonaws.com"
     url = f"https://{host}{uri}"
+    method = request.get('method', 'GET')
     
     headers = {
         'Host': host,
         'x-amz-content-sha256': 'UNSIGNED-PAYLOAD'
     }
     
-    aws_request = AWSRequest(method='GET', url=url, headers=headers)
+    aws_request = AWSRequest(method=method, url=url, headers=headers)
     SigV4Auth(credentials, 's3', region).add_auth(aws_request)
     
     request['origin'] = {
