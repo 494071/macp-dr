@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Option 7 - CloudFront Distribution with Origin Group and Lambda@Edge'
+Description: 'Option 7 - CloudFront Distribution with Lambda@Edge (Manual Failover)'
 
 Parameters:
   Environment:
@@ -27,16 +27,11 @@ Parameters:
     Default: chat.prod.gsa.dos.macp.cloud
     Description: Chat widget subdomain
 
-  # S3 Origins
+  # S3 Origin (placeholder - Lambda@Edge overrides this)
   PrimaryBucketDomain:
     Type: String
     Description: Regional domain name of primary S3 bucket (us-east-1)
     Default: macp-dr-opt7-content-prod-us-east-1.s3.us-east-1.amazonaws.com
-
-  DRBucketDomain:
-    Type: String
-    Description: Regional domain name of DR S3 bucket (us-west-2)
-    Default: macp-dr-opt7-content-prod-us-west-2.s3.us-west-2.amazonaws.com
 
   # Lambda@Edge
   LambdaEdgeVersionArn:
@@ -61,18 +56,9 @@ Parameters:
     Default: maximus-cloudfront-logs-417886991978-us-east-1
 
 Resources:
-  # CloudFront Origin Access Control for S3
-  CloudFrontOAC:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub 'OAC-${Environment}-option7-dr'
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
-        Description: OAC for Option 7 DR CloudFront distribution
+  # Note: No OAC needed - Lambda@Edge signs requests using SigV4
 
-  # CloudFront Distribution with Origin Group
+  # CloudFront Distribution
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -80,7 +66,7 @@ Resources:
         Enabled: true
         HttpVersion: http2and3
         IPV6Enabled: true
-        Comment: !Sub 'Option 7 DR Distribution - ${Environment} - Lambda@Edge + Origin Group'
+        Comment: !Sub 'Option 7 DR Distribution - ${environment} - Manual Failover via DynamoDB'
         
         # Multiple subdomain aliases
         Aliases:
@@ -88,47 +74,22 @@ Resources:
           - !Ref AgentDomain
           - !Ref ChatDomain
         
-        # Define both S3 origins
+        # Single S3 origin - Lambda@Edge dynamically routes to active region
+        # CloudFront requires at least one origin, but Lambda@Edge overrides it
         Origins:
-          # Primary origin (us-east-1)
-          - Id: S3PrimaryOrigin
+          - Id: S3Origin
             DomainName: !Ref PrimaryBucketDomain
-            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
-            S3OriginConfig: {}
-            ConnectionAttempts: 3
-            ConnectionTimeout: 10
-          
-          # DR origin (us-west-2)
-          - Id: S3DROrigin
-            DomainName: !Ref DRBucketDomain
-            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
-            S3OriginConfig: {}
+            S3OriginConfig:
+              OriginAccessIdentity: ''  # No OAI - Lambda@Edge signs requests
             ConnectionAttempts: 3
             ConnectionTimeout: 10
         
-        # Origin Group for automatic failover (safety net)
-        OriginGroups:
-          Quantity: 1
-          Items:
-            - Id: S3OriginGroup
-              Members:
-                Quantity: 2
-                Items:
-                  - OriginId: S3PrimaryOrigin
-                  - OriginId: S3DROrigin
-              FailoverCriteria:
-                StatusCodes:
-                  Quantity: 5
-                  Items:
-                    - 403  # Bucket policy deny (used for manual failover drill)
-                    - 404  # Object not found
-                    - 500  # Internal server error
-                    - 502  # Bad gateway
-                    - 503  # Service unavailable
+        # Note: No Origin Group - manual failover only via DynamoDB
+        # Lambda@Edge reads active_region and routes to the appropriate S3 bucket
         
         # Default behavior with Lambda@Edge
         DefaultCacheBehavior:
-          TargetOriginId: S3OriginGroup
+          TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods:
             - GET
@@ -152,7 +113,7 @@ Resources:
         CacheBehaviors:
           # /admin/* - Admin portal
           - PathPattern: /admin/*
-            TargetOriginId: S3OriginGroup
+            TargetOriginId: S3Origin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods:
               - GET
@@ -169,7 +130,7 @@ Resources:
           
           # /agent/* - Agent CCP workspace
           - PathPattern: /agent/*
-            TargetOriginId: S3OriginGroup
+            TargetOriginId: S3Origin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods:
               - GET
@@ -186,7 +147,7 @@ Resources:
           
           # /chat/* - Chat widget assets
           - PathPattern: /chat/*
-            TargetOriginId: S3OriginGroup
+            TargetOriginId: S3Origin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods:
               - GET
@@ -203,12 +164,10 @@ Resources:
         
         DefaultRootObject: index.html
         
-        # Custom error responses - minimal caching for failover responsiveness
+        # Custom error responses
         CustomErrorResponses:
           - ErrorCode: 403
             ErrorCachingMinTTL: 0
-          - ErrorCode: 404
-            ErrorCachingMinTTL: 10
           - ErrorCode: 500
             ErrorCachingMinTTL: 0
           - ErrorCode: 502
@@ -273,14 +232,8 @@ Outputs:
     Description: Chat widget URL
     Value: !Sub 'https://${ChatDomain}'
 
-  OACId:
-    Description: Origin Access Control ID (add to S3 bucket policies)
-    Value: !GetAtt CloudFrontOAC.Id
-    Export:
-      Name: !Sub '${AWS::StackName}-OACId'
-
   DistributionArn:
-    Description: CloudFront distribution ARN (for S3 bucket policies)
+    Description: CloudFront distribution ARN
     Value: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
     Export:
       Name: !Sub '${AWS::StackName}-DistributionArn'

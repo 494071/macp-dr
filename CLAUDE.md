@@ -6,7 +6,7 @@ MACP Connect DR infrastructure - disaster recovery for an AWS Connect contact ce
 
 ## Architecture (Option 7)
 
-**Single CloudFront distribution** with Lambda@Edge reading a DynamoDB Global Table to route requests to the active region's S3 bucket.
+**Single CloudFront distribution** with Lambda@Edge reading a DynamoDB Global Table to route requests to the active region's S3 bucket. Manual failover only.
 
 ```
 User Request → CloudFront → Lambda@Edge → checks DynamoDB → routes to active S3 bucket
@@ -16,8 +16,8 @@ User Request → CloudFront → Lambda@Edge → checks DynamoDB → routes to ac
 ```
 
 **Failover mechanism:**
-- **Proactive**: Operator updates DynamoDB `active_region` value → Lambda@Edge routes to new region
-- **Automatic**: CloudFront Origin Group fails over if primary S3 returns 5xx/403
+- **Manual**: Operator updates DynamoDB `active_region` value → Lambda@Edge routes to new region (~15 sec RTO)
+- CloudFront requires an origin defined, but Lambda@Edge overrides it dynamically
 
 ## Key Files
 

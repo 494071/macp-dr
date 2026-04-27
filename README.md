@@ -6,9 +6,9 @@ This project implements a Disaster Recovery solution for MACP Connect using Lamb
 
 **Key Features:**
 - **Single CloudFront distribution** with multiple subdomain aliases
-- **Origin Group** for automatic failover (safety net)
-- **Lambda@Edge** for proactive routing based on DynamoDB control signal
+- **Lambda@Edge** for dynamic routing based on DynamoDB control signal
 - **DynamoDB Global Table** replicated to us-east-1 and us-west-2
+- **Manual failover** via DynamoDB update (~15 second RTO)
 
 ## Architecture
 
@@ -27,14 +27,16 @@ This project implements a Disaster Recovery solution for MACP Connect using Lamb
            │  CloudFront (Single)  │
            │  Aliases: all above   │
            │  Lambda@Edge ─────────┼──▶ DynamoDB Global Table
-           │  Origin Group         │    (us-east-1 + us-west-2)
-           └───────────┬───────────┘
+           └───────────┬───────────┘    (us-east-1 + us-west-2)
                        │
           ┌────────────┴────────────┐
           ▼                         ▼
     S3 us-east-1              S3 us-west-2
-    (Primary)                 (DR - via CRR)
+    (Primary)                 (DR)
 ```
+
+**Note:** CloudFront requires at least one origin defined, but Lambda@Edge dynamically
+overrides it based on the DynamoDB control signal.
 
 ## Deployment Order
 
@@ -43,10 +45,10 @@ Deploy stacks in this order:
 | Order | Template | Region | Description |
 |-------|----------|--------|-------------|
 | 1 | `01-dynamodb-global-table.yaml` | us-east-1 | Creates Global Table with us-west-2 replica |
-| 2 | `02-s3-buckets.yaml` | us-east-1 | Primary bucket + CRR to us-west-2 |
-| 3 | `02-s3-buckets.yaml` | us-west-2 | DR bucket (CRR destination) |
+| 2 | `02-s3-buckets.yaml` | us-east-1 | Primary bucket |
+| 3 | `02-s3-buckets.yaml` | us-west-2 | DR bucket |
 | 4 | `03-lambda-edge.yaml` | us-east-1 | Lambda@Edge function (must be us-east-1) |
-| 5 | `04-cloudfront-distribution.yaml` | us-east-1 | CloudFront with origin group + Lambda |
+| 5 | `04-cloudfront-distribution.yaml` | us-east-1 | CloudFront with Lambda@Edge |
 
 ## Subdomains
 
@@ -56,14 +58,16 @@ Deploy stacks in this order:
 | `agent.prod.gsa.dos.macp.cloud` | `/agent/` | CCP / Workspace |
 | `chat.prod.gsa.dos.macp.cloud` | `/chat/` | Chat widget assets |
 
-## Failover Methods
+## Failover
 
 | Method | RTO | Trigger |
 |--------|-----|---------|
-| **Proactive (DDB flip)** | ~15 sec | Operator writes to DynamoDB |
-| **Automatic (Origin Group)** | ~seconds | Primary origin returns 5xx/403 |
+| **Manual (DDB update)** | ~15 sec | Operator writes `active_region` to DynamoDB |
 
-## Proactive Failover Command
+Lambda@Edge caches the active region for ~15 seconds, so failover propagates quickly
+across all edge locations.
+
+## Failover Commands
 
 ```bash
 # Failover to DR (us-west-2)
