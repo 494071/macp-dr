@@ -84,39 +84,42 @@ aws dynamodb put-item --table-name macp-dr-prod-failover-state \
   --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-east-1"}}'
 ```
 
-## Failover Commands
+## Failover Procedure
 
-### Quick One-Liners
+**Important:** CloudFront caching is set to 24 hours. After updating DynamoDB, you **must** 
+invalidate the CloudFront cache for failover to take effect immediately.
+
+### Step 1: Update DynamoDB
 
 ```bash
 # Failover to DR (us-west-2)
 aws dynamodb put-item --table-name macp-dr-prod-failover-state \
-  --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-west-2"}}'
+  --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-west-2"},"updated_at":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"},"updated_by":{"S":"'$(whoami)'"}}'
 
 # Failback to Primary (us-east-1)
 aws dynamodb put-item --table-name macp-dr-prod-failover-state \
-  --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-east-1"}}'
+  --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-east-1"},"updated_at":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"},"updated_by":{"S":"'$(whoami)'"}}'
+```
 
-# Check current state
-aws dynamodb get-item --table-name macp-dr-prod-failover-state \
-  --key '{"config_key":{"S":"active_region"}}' --query 'Item.active_region.S' --output text
+### Step 2: Invalidate CloudFront Cache (Required)
 
-# Optional: Invalidate cache for immediate effect
+```bash
+# Invalidate all cached content
 aws cloudfront create-invalidation --distribution-id E1KLVY7Q1RG0RK --paths "/*"
 ```
 
-### With Metadata
+### Check Current State
 
 ```bash
-# Failover to DR (us-west-2) with audit trail
-aws dynamodb put-item --table-name macp-dr-prod-failover-state \
-  --item '{"config_key":{"S":"active_region"},"active_region":{"S":"us-west-2"},"updated_at":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"},"updated_by":{"S":"'$(whoami)'"}}'
+aws dynamodb get-item --table-name macp-dr-prod-failover-state \
+  --key '{"config_key":{"S":"active_region"}}' --query 'Item.active_region.S' --output text
 ```
 
 ## Timing
 
-- **Lambda Cache TTL**: 15 seconds - failover takes effect within this window
-- **Cache Invalidation**: Optional, for immediate effect (~30s to propagate)
+- **DynamoDB update**: Instant (replicated globally in ~1 second)
+- **Cache Invalidation**: ~30-60 seconds to propagate to all edge locations
+- **Total RTO**: ~30-60 seconds
 
 ## Testing
 

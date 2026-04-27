@@ -62,12 +62,14 @@ Deploy stacks in this order:
 
 | Method | RTO | Trigger |
 |--------|-----|---------|
-| **Manual (DDB update)** | ~15 sec | Operator writes `active_region` to DynamoDB |
+| **Manual (DDB + invalidation)** | ~30-60 sec | Operator updates DynamoDB + invalidates CloudFront cache |
 
-Lambda@Edge caches the active region for ~15 seconds, so failover propagates quickly
-across all edge locations.
+**Important:** CloudFront caching is set to 24 hours. After updating DynamoDB, you **must** 
+invalidate the CloudFront cache for failover to take effect immediately.
 
-## Failover Commands
+## Failover Procedure
+
+### Step 1: Update DynamoDB
 
 ```bash
 # Failover to DR (us-west-2)
@@ -82,8 +84,24 @@ aws dynamodb update-item \
     ":u":{"S":"operator"},
     ":m":{"S":"Manual failover"}
   }'
+```
 
-# Revert to Primary (us-east-1)
+### Step 2: Invalidate CloudFront Cache (Required)
+
+```bash
+# Get distribution ID
+DIST_ID=$(aws cloudfront list-distributions \
+  --query "DistributionList.Items[?contains(Aliases.Items, 'admin.prod.gsa.dos.macp.cloud')].Id" \
+  --output text)
+
+# Invalidate all cached content
+aws cloudfront create-invalidation --distribution-id $DIST_ID --paths "/*"
+```
+
+### Failback to Primary
+
+```bash
+# Step 1: Update DynamoDB
 aws dynamodb update-item \
   --region us-east-1 \
   --table-name macp-dr-prod-failover-state \
@@ -95,6 +113,9 @@ aws dynamodb update-item \
     ":u":{"S":"operator"},
     ":m":{"S":"Revert to primary"}
   }'
+
+# Step 2: Invalidate CloudFront cache
+aws cloudfront create-invalidation --distribution-id $DIST_ID --paths "/*"
 ```
 
 ## Check Current State
@@ -121,14 +142,14 @@ aws dynamodb get-item \
 ## Project Structure
 
 ```
-├── 01-dynamodb-global-table.yaml   # DynamoDB Global Table for failover state
-├── 02-s3-buckets.yaml              # S3 buckets with cross-region replication
-├── 03-lambda-edge.yaml             # Lambda@Edge routing function
-├── 04-cloudfront-distribution.yaml # CloudFront with origin groups
-├── lambda/                         # Lambda function source code
-├── dr-dashboard.html               # DR operations dashboard
-├── cdk/                            # AWS CDK implementation (alternative)
-└── research/                       # Previous architecture options and docs
+├── cdk/                    # AWS CDK implementation (authoritative)
+│   ├── bin/                # CDK app entry point
+│   ├── lib/                # Stack definitions
+│   ├── lambda/             # Lambda function source
+│   └── failover.sh         # Failover helper script
+├── lambda/                 # Lambda source (reference copy)
+├── dr-dashboard.html       # DR operations dashboard
+└── research/               # Previous architecture options and docs
 ```
 
 ## Research & Alternative Approaches
