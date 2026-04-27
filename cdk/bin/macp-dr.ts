@@ -47,7 +47,7 @@ const config = {
 };
 
 // DR Bucket Stack (deploy to us-west-2 first)
-const drBucketStack = new DrBucketStack(app, 'MacpDrBucketStack', {
+const drBucketStack = new DrBucketStack(app, 'Option7DrBucketStack', {
   env: { account: accountId, region: 'us-west-2' },
   environment,
   s3LoggingBucket: config.s3LoggingBucketWest,
@@ -55,7 +55,8 @@ const drBucketStack = new DrBucketStack(app, 'MacpDrBucketStack', {
 });
 
 // Main DR Stack (deploy to us-east-1)
-const mainStack = new MacpDrStack(app, 'MacpDrStack', {
+// Note: Stack ID kept as 'Option7Stack' to match existing deployed stack
+const mainStack = new MacpDrStack(app, 'Option7Stack', {
   env: { account: accountId, region: 'us-east-1' },
   ...config,
   s3LoggingBucket: config.s3LoggingBucketEast,
