@@ -223,16 +223,16 @@ def sign_s3_request(request, bucket, region, uri):
     return request
 
 
-def generate_redirect_response(url):
+def generate_redirect_response(url, cache_seconds=300):
     """
-    Generate a 302 redirect response.
+    Generate a 302 redirect response with caching.
     """
     return {
         'status': '302',
         'statusDescription': 'Found',
         'headers': {
             'location': [{'key': 'Location', 'value': url}],
-            'cache-control': [{'key': 'Cache-Control', 'value': 'no-cache, no-store, must-revalidate'}]
+            'cache-control': [{'key': 'Cache-Control', 'value': f'public, max-age={cache_seconds}'}]
         }
     }
 
